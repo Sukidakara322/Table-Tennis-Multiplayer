@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "linked-player",
+  "main": "./src/worker/index.ts",
+  "compatibility_date": "2026-09-12",
+  "assets": {
+    // Vite builds the client into the asset directory; the Worker only handles /api/*.
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

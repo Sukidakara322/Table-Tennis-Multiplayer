@@ -1,0 +1,33 @@
+{
+  "name": "linked-player",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Neon table tennis: challenge a colleague with one link",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "npm run build && vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "cf-typegen": "wrangler types"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sukidakara322/Table-Tennis-Multiplayer.git"
+  },
+  "dependencies": {
+    "@fontsource/orbitron": "^5.3.0",
+    "@fontsource/rajdhani": "^5.3.0",
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.11",
+    "@types/three": "^0.186.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1",
+    "wrangler": "^4.133.0"
+  }
+}
