@@ -11,12 +11,16 @@ import {
   NET_HALF_SPAN,
   NET_HEIGHT,
   PADDLE_VISUAL_RADIUS,
+  AIM_X_LIMIT,
+  VIEW_EYE_Y,
+  VIEW_EYE_Z,
   TABLE_HEIGHT,
   TABLE_LENGTH,
   TABLE_THICKNESS,
   TABLE_WIDTH,
 } from '../../shared/constants';
-import { toLocalVec, toWorldVec } from '../../shared/frames';
+import { toWorldVec } from '../../shared/frames';
+import type { PaddleFace } from '../../shared/racket';
 import type { PlayerIndex } from '../../shared/types';
 import { clamp, type Vec2, type Vec3 } from '../../shared/vec';
 
@@ -35,23 +39,40 @@ const BALL_ORANGE = new THREE.Color(2.4, 0.9, 0.2);
 const RUBBER_RED = 0xc8202f;
 const RUBBER_BLACK = 0x111217;
 const HANDLE_WOOD = 0xa8753f;
-/** Visual-only enlargement so the ball reads at a distance (collisions use the real radius). */
-const BALL_VISUAL_SCALE = 1.45;
+/** Near-true ball size, so what you see overlapping the paddle is what the game counts as a hit. */
+const BALL_VISUAL_SCALE = 1.15;
+/** Camera sits at the shared eye position (VIEW_EYE_*), behind the player's end. */
+const CAMERA_FOV = 50;
+/** Point the camera looks at, in the viewer's local frame. */
+const CAMERA_LOOK_AT = { x: 0, y: 0.05, z: -1.1 };
 /** Bloom strength at glow level 1 (the ESC-menu slider scales it). */
 const BASE_BLOOM = 0.4;
+
+/**
+ * The camera stays still in normal play. Only when the viewer's paddle reaches out past this x (beyond
+ * the table's side) does it pan towards that side, up to CAMERA_EDGE_PAN at the paddle's limit.
+ */
+const CAMERA_EDGE_START = 1.0;
+const CAMERA_EDGE_PAN = 0.35;
+const CAMERA_EDGE_AIM = 0.15;
+const CAMERA_FOLLOW_TIME = 0.35;
 
 export interface PaddleFrame {
   /** World position. */
   pos: Vec3;
   /** Swing velocity in the owner's local frame. */
   swing: Vec2;
+  /** Racket face angle in the owner's local frame. */
+  face: PaddleFace;
+  /** Owner's body centre x in their local frame (the handle points back towards it). */
+  bodyX: number;
 }
 
 export interface RenderFrame {
   ball: { pos: Vec3; vel: Vec3; spin: Vec3 } | null;
   paddles: [PaddleFrame, PaddleFrame];
-  /** Where the viewing player will meet the ball (world), for the aim marker. */
-  aimMarker: Vec3 | null;
+  /** The viewing player's aim x in their local frame; the camera pans only when it reaches the far sides. */
+  followX: number;
 }
 
 function hdr(color: THREE.Color, intensity: number): THREE.Color {
@@ -70,10 +91,12 @@ export class GameRenderer {
   private readonly sparks: Sparks;
   private readonly ripples: Ripples;
   private readonly paddles: [PaddleVisual, PaddleVisual];
-  private readonly marker: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
   private readonly netCord: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>;
   private readonly cameraHome = new THREE.Vector3();
   private readonly lookTarget = new THREE.Vector3();
+  /** World direction of the viewer's local +x. */
+  private readonly viewRight = new THREE.Vector3(1, 0, 0);
+  private follow = 0;
   private netFlash = 0;
   private shake = 0;
   private trailColor = new THREE.Color(1, 1, 1);
@@ -88,7 +111,7 @@ export class GameRenderer {
     this.scene.background = new THREE.Color(BACKGROUND);
     this.scene.fog = new THREE.FogExp2(BACKGROUND, 0.06);
 
-    this.camera = new THREE.PerspectiveCamera(50, 1, 0.01, 200);
+    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.01, 200);
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -120,12 +143,6 @@ export class GameRenderer {
     this.paddles = [new PaddleVisual(PLAYER_COLORS[0]), new PaddleVisual(PLAYER_COLORS[1])];
     this.scene.add(this.paddles[0].group, this.paddles[1].group);
 
-    this.marker = new THREE.Mesh(
-      new THREE.RingGeometry(0.03, 0.035, 40),
-      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide }),
-    );
-    this.scene.add(this.marker);
-
     this.setViewPlayer(0);
     this.resize();
     window.addEventListener('resize', this.resize);
@@ -133,18 +150,16 @@ export class GameRenderer {
 
   /** Places the camera behind `player`'s end of the table. */
   setViewPlayer(player: PlayerIndex): void {
-    // High enough that the opponent's half isn't squashed, far enough back to see low balls at full reach.
-    const home = toWorldVec(player, { x: 0, y: 1.6, z: HALF_LENGTH + 2.3 });
-    const look = toWorldVec(player, { x: 0, y: 0.05, z: -1.1 });
+    const home = toWorldVec(player, { x: 0, y: VIEW_EYE_Y, z: VIEW_EYE_Z });
+    const look = toWorldVec(player, CAMERA_LOOK_AT);
     this.cameraHome.set(home.x, home.y, home.z);
     this.lookTarget.set(look.x, look.y, look.z);
+    this.viewRight.set(player === 0 ? 1 : -1, 0, 0);
     this.camera.position.copy(this.cameraHome);
     this.camera.lookAt(this.lookTarget);
     this.camera.updateMatrixWorld();
     this.paddles[player].setLocalView(true);
     this.paddles[player === 0 ? 1 : 0].setLocalView(false);
-    this.marker.material.color.copy(PLAYER_COLORS[player]);
-    this.marker.rotation.y = player === 0 ? 0 : Math.PI;
   }
 
   /** 0 = no glow, 1 = default, 2 = strong. */
@@ -153,29 +168,9 @@ export class GameRenderer {
     this.bloom.enabled = level > 0.01;
   }
 
-  /**
-   * Projects the cursor (NDC) onto the paddle plane at local depth `localZ` of `player`
-   * and returns the point in that player's local frame.
-   */
-  cursorToLocalPlane(cursor: Vec2, localZ: number, player: PlayerIndex): Vec3 {
-    const worldZ = player === 0 ? localZ : -localZ;
-    const origin = this.cameraHome;
-    const dir = new THREE.Vector3(cursor.x, cursor.y, 0.5).unproject(this.camera).sub(origin).normalize();
-    const t = Math.abs(dir.z) > 1e-6 ? (worldZ - origin.z) / dir.z : 0;
-    const point = { x: origin.x + dir.x * t, y: origin.y + dir.y * t, z: worldZ };
-    return toLocalVec(player, point);
-  }
-
   render(frame: RenderFrame, dt: number): void {
     this.updateBall(frame.ball);
     frame.paddles.forEach((paddle, i) => this.paddles[i]!.update(paddle, i as PlayerIndex, dt));
-
-    if (frame.aimMarker) {
-      this.marker.visible = true;
-      this.marker.position.set(frame.aimMarker.x, frame.aimMarker.y, frame.aimMarker.z);
-    } else {
-      this.marker.visible = false;
-    }
 
     this.sparks.update(dt);
     this.ripples.update(dt);
@@ -183,17 +178,18 @@ export class GameRenderer {
     this.netFlash = Math.max(0, this.netFlash - dt * 3);
     this.netCord.material.color.copy(hdr(LINE_WHITE, 1 + this.netFlash * 1.5));
 
+    // Pan only when the viewer reaches out to an extreme side (never follows the ball).
+    const beyond = Math.max(0, Math.abs(frame.followX) - CAMERA_EDGE_START) / (AIM_X_LIMIT - CAMERA_EDGE_START);
+    const edge = Math.sign(frame.followX) * Math.min(1, beyond);
+    this.follow += (edge - this.follow) * (1 - Math.exp(-dt / CAMERA_FOLLOW_TIME));
     this.shake = Math.max(0, this.shake - dt * 2.5);
     const s = this.shake * this.shake * 0.02;
-    this.camera.position.set(
-      this.cameraHome.x + (Math.random() - 0.5) * s,
-      this.cameraHome.y + (Math.random() - 0.5) * s,
-      this.cameraHome.z,
-    );
+    this.camera.position
+      .copy(this.cameraHome)
+      .addScaledVector(this.viewRight, this.follow * CAMERA_EDGE_PAN)
+      .add(new THREE.Vector3((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, 0));
+    this.camera.lookAt(this.lookTarget.clone().addScaledVector(this.viewRight, this.follow * CAMERA_EDGE_AIM));
     this.composer.render(dt);
-    // Keep raycasts (cursor → paddle) independent of the shake.
-    this.camera.position.copy(this.cameraHome);
-    this.camera.updateMatrixWorld();
   }
 
   hitEffect(pos: Vec3, player: PlayerIndex, strength: number): void {
@@ -487,12 +483,13 @@ class PaddleVisual {
 
   /**
    * The viewer's own paddle is close to the camera: make it see-through so it never hides the ball,
-   * keeping the rim solid so its position stays obvious.
+   * keeping the rim solid so its position stays obvious. A ball still behind the paddle shows dimmed
+   * through the rubber; once it has passed in front it is drawn at full brightness.
    */
   setLocalView(isLocal: boolean): void {
     for (const face of this.faces) {
       face.material.transparent = isLocal;
-      face.material.opacity = isLocal ? 0.4 : 1;
+      face.material.opacity = isLocal ? 0.55 : 1;
       face.material.depthWrite = !isLocal;
     }
     this.handle.material.transparent = isLocal;
@@ -505,10 +502,16 @@ class PaddleVisual {
     this.group.position.set(frame.pos.x, frame.pos.y, frame.pos.z);
     this.group.rotation.y = player === 0 ? 0 : Math.PI;
     const localX = player === 0 ? frame.pos.x : -frame.pos.x;
-    const k = 1 - Math.exp(-dt * 18);
-    // Handle points back towards the body; the face closes on upward swings and opens on chops.
-    this.tilt.rotation.z += (-clamp(localX * 0.9, -0.9, 0.9) - this.tilt.rotation.z) * k;
-    this.tilt.rotation.x += (clamp(-frame.swing.y * 0.06, -0.7, 0.7) - this.tilt.rotation.x) * k;
+    const k = 1 - Math.exp(-dt * 14);
+    // Same face angle the physics uses: turned towards the table centre, open when low, closed when high.
+    // On top of that the face visibly closes on upward swings, and the handle points back to the body
+    // (forehand on the right of the body, backhand on the left).
+    const yaw = -frame.face.yaw;
+    const pitch = clamp(frame.face.pitch - frame.swing.y * 0.04, -0.8, 0.8);
+    const roll = -clamp((localX - frame.bodyX) * 1.4, -1.1, 1.1);
+    this.tilt.rotation.y += (yaw - this.tilt.rotation.y) * k;
+    this.tilt.rotation.x += (pitch - this.tilt.rotation.x) * k;
+    this.tilt.rotation.z += (roll - this.tilt.rotation.z) * k;
   }
 }
 

@@ -22,7 +22,6 @@ export interface GameUiCallbacks {
   onRestart(): void;
   onLeave(): void;
   onSensitivity(value: number): void;
-  onAimMarker(enabled: boolean): void;
   onGlow(value: number): void;
 }
 
@@ -51,7 +50,7 @@ export class GameUi {
   constructor(
     parent: HTMLElement,
     names: [string, string],
-    settings: { sensitivity: number; aimMarker: boolean; glow: number },
+    settings: { sensitivity: number; glow: number },
     callbacks: GameUiCallbacks,
   ) {
     this.cards = [this.playerCard(names[0], 0), this.playerCard(names[1], 1)];
@@ -79,9 +78,6 @@ export class GameUi {
       attrs: { type: 'range', min: '0', max: '2', step: '0.05', value: String(settings.glow), id: 'glow' },
     });
     glow.addEventListener('input', () => callbacks.onGlow(Number(glow.value)));
-    const aimMarker = el('input', { attrs: { type: 'checkbox', id: 'aim-marker' } });
-    aimMarker.checked = settings.aimMarker;
-    aimMarker.addEventListener('change', () => callbacks.onAimMarker(aimMarker.checked));
 
     this.pauseNote = el('p', { class: 'menu-note' });
     this.pauseOverlay = el('div', { class: 'overlay' }, [
@@ -94,7 +90,6 @@ export class GameUi {
           sensitivity,
           el('label', { class: 'field-label', text: 'Glow', attrs: { for: 'glow' } }),
           glow,
-          el('label', { class: 'checkbox' }, [aimMarker, el('span', { text: 'Show where to meet the ball' })]),
         ]),
         el('button', { class: 'btn btn-secondary', text: 'Restart match', attrs: { type: 'button' }, on: { click: () => callbacks.onRestart() } }),
         el('button', { class: 'btn btn-danger', text: 'Leave match', attrs: { type: 'button' }, on: { click: () => callbacks.onLeave() } }),

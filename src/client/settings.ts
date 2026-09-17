@@ -6,7 +6,6 @@ export interface Settings {
   gamesToWin: GamesToWin;
   difficulty: BotDifficulty;
   sensitivity: number;
-  aimMarker: boolean;
   /** 0 = no glow, 1 = default, 2 = strong. */
   glow: number;
 }
@@ -18,7 +17,6 @@ const DEFAULTS: Settings = {
   gamesToWin: 2,
   difficulty: 'normal',
   sensitivity: 1,
-  aimMarker: true,
   glow: 1,
 };
 

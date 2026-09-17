@@ -22,7 +22,8 @@ const MAX_EVENT_MOVEMENT = 250;
 export class PointerInput {
   sensitivity = 1;
   locked = false;
-  private samples: CursorSample[] = [{ t: performance.now(), x: 0, y: -0.35 }];
+  /** Starts a little above centre, which maps to a comfortable ~0.3 m paddle height. */
+  private samples: CursorSample[] = [{ t: performance.now(), x: 0, y: 0.25 }];
 
   constructor(
     private readonly target: HTMLElement,

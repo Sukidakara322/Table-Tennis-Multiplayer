@@ -17,6 +17,10 @@ export function copyVec3(v: Vec3): Vec3 {
   return { x: v.x, y: v.y, z: v.z };
 }
 
+export function cross3(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+}
+
 export function length3(v: Vec3): number {
   return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }

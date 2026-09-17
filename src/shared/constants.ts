@@ -44,20 +44,53 @@ export const NET_BODY_RESTITUTION = 0.12;
 export const REST_SPEED = 0.15;
 
 // Paddle zone, expressed in a player's local frame (own end of the table at +z)
-export const PADDLE_HIT_RADIUS = 0.13;
 export const PADDLE_VISUAL_RADIUS = 0.078;
-export const PADDLE_X_LIMIT = 1.5;
+/** What you see is what you hit: the ball's centre must pass within the drawn blade plus the ball's radius. */
+export const PADDLE_HIT_RADIUS = PADDLE_VISUAL_RADIUS + BALL_RADIUS;
+/**
+ * Depth is not steered: the paddle travels with the incoming ball within this reach, so paddle and ball
+ * are always at the same depth and what overlaps on screen is exactly what touches. The reach starts at
+ * the end line (no accidental volleys) and ends where the camera can still show low paddle positions.
+ */
+export const REACH_NEAR_Z = HALF_LENGTH + 0.03;
+export const REACH_FAR_Z = HALF_LENGTH + 0.6;
+
+/** The viewer's eye, in the viewer's local frame. Shared so the mouse mapping matches what is drawn. */
+export const VIEW_EYE_Y = 1.6;
+export const VIEW_EYE_Z = HALF_LENGTH + 2.3;
+/**
+ * The mouse aims the paddle on this plane (the start of the reach): x ±AIM_X_LIMIT and height
+ * AIM_Y_MIN..AIM_Y_MAX across the whole mouse range. At any other depth the paddle stays on the same
+ * line of sight from the eye, so it never slides on screen while it travels with the ball.
+ */
+export const AIM_PLANE_Z = REACH_NEAR_Z;
+export const AIM_X_LIMIT = 1.7;
+export const AIM_Y_MIN = -0.45;
+export const AIM_Y_MAX = 0.75;
+/** Hard world bounds for the paddle wherever it is. */
+export const PADDLE_X_LIMIT = 1.8;
+export const PADDLE_Y_MIN = -0.5;
 export const PADDLE_Y_MAX = 1.0;
-export const PADDLE_Y_MIN_OVER_TABLE = 0.03;
-export const PADDLE_Y_MIN_BEHIND_TABLE = -0.3;
-export const SERVE_Z = HALF_LENGTH + 0.22;
-export const READY_Z = HALF_LENGTH + 0.35;
-export const MIN_PADDLE_Z = 0.22;
-export const MAX_PADDLE_Z = HALF_LENGTH + 0.6;
-export const PADDLE_DEPTH_SPEED = 6;
+/** Speed at which the paddle glides back to the start of its reach when not riding with the ball. */
+export const PADDLE_DEPTH_RETURN_SPEED = 6;
+export const PADDLE_READY_HEIGHT = 0.3;
+/**
+ * Arm arc: reaching wide or very high/low pulls the paddle back towards the body by up to this much,
+ * so the paddle moves on a curved surface around the player rather than a flat plane.
+ */
+export const ARM_ARC_DEPTH = 0.25;
+/** Comfortable reach from the body centre before the arc is fully bent (sideways, vertically). */
+export const ARM_REACH_X = 0.8;
+export const ARM_REACH_Y = 0.45;
+/** The body shuffles after the paddle: it covers ~63% of the gap in this many seconds. */
+export const BODY_FOLLOW_TIME = 0.4;
+/** A player can't touch the ball again this soon after their own stroke. */
+export const HIT_COOLDOWN = 0.3;
 
 // Serve
-/** Launch speed of the serve toss: rises ~0.46 m above the hand (ITTF minimum is 0.16 m). */
-export const TOSS_SPEED = 3.0;
-export const TOSS_HEIGHT_ABOVE_PADDLE = 0.1;
-export const TOSS_Z_IN_FRONT_OF_PADDLE = 0.05;
+/** The ball is tossed from this depth behind the end line; the server's paddle sits at the same depth. */
+export const SERVE_BALL_Z = HALF_LENGTH + 0.15;
+/** Before the toss the ball rests this far above the paddle and follows it. */
+export const TOSS_HEIGHT_ABOVE_PADDLE = 0.12;
+/** Launch speed of the serve toss: rises ~0.8 m above the hand (ITTF minimum is 0.16 m). */
+export const TOSS_SPEED = 4.0;
