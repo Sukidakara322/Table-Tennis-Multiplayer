@@ -7,6 +7,8 @@ export interface Settings {
   difficulty: BotDifficulty;
   sensitivity: number;
   aimMarker: boolean;
+  /** 0 = no glow, 1 = default, 2 = strong. */
+  glow: number;
 }
 
 const STORAGE_KEY = 'linked-player.settings';
@@ -17,6 +19,7 @@ const DEFAULTS: Settings = {
   difficulty: 'normal',
   sensitivity: 1,
   aimMarker: true,
+  glow: 1,
 };
 
 // Per-browser conveniences only; the game works the same when storage is unavailable.

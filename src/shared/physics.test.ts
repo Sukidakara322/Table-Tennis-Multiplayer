@@ -109,18 +109,25 @@ describe('racket returns', () => {
       { x: 0, y: 5 },
       { x: -3, y: -3 },
     ];
-    for (const swing of swings) {
-      const contact = ball([0, 0.12 + TOSS_HEIGHT_ABOVE_PADDLE, SERVE_Z - 0.05], [0, -1, 0]);
-      const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, isServe: true });
-      const events = simulate(out, 3, (e) => tableBounces(e).length >= 2 || e.some((x) => x.type === 'floor' || x.type === 'net'));
-      const sides = tableBounces(events).map((e) => `${e.side}@${e.pos.z.toFixed(2)}`);
-      const net = events.some((e) => e.type === 'net');
-      results.push(`swing ${swing.x},${swing.y} → ${sides.join(' ')}${net ? ' NET' : ''}`);
-      const bounces = tableBounces(events);
-      if (bounces[0]?.side === 0 && bounces[1]?.side === 1) good++;
+    // Low contact (let the toss drop) and high contact (strike near the top of the toss).
+    const contacts: Array<[number, number]> = [
+      [0.12 + TOSS_HEIGHT_ABOVE_PADDLE, -2.5],
+      [0.5, -1.2],
+    ];
+    for (const [height, fallSpeed] of contacts) {
+      for (const swing of swings) {
+        const contact = ball([0, height, SERVE_Z - 0.05], [0, fallSpeed, 0]);
+        const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, isServe: true });
+        const events = simulate(out, 3, (e) => tableBounces(e).length >= 2 || e.some((x) => x.type === 'floor' || x.type === 'net'));
+        const sides = tableBounces(events).map((e) => `${e.side}@${e.pos.z.toFixed(2)}`);
+        const net = events.some((e) => e.type === 'net');
+        results.push(`y=${height.toFixed(2)} swing ${swing.x},${swing.y} → ${sides.join(' ')}${net ? ' NET' : ''}`);
+        const bounces = tableBounces(events);
+        if (bounces[0]?.side === 0 && bounces[1]?.side === 1) good++;
+      }
     }
     console.log(results.join('\n'));
-    expect(good).toBeGreaterThanOrEqual(5);
+    expect(good).toBeGreaterThanOrEqual(10);
   });
 
   it('predicts where the receiver meets the ball', () => {

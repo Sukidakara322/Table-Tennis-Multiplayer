@@ -57,6 +57,7 @@ export const MAX_PADDLE_Z = HALF_LENGTH + 0.6;
 export const PADDLE_DEPTH_SPEED = 6;
 
 // Serve
-export const TOSS_SPEED = 2.4;
+/** Launch speed of the serve toss: rises ~0.46 m above the hand (ITTF minimum is 0.16 m). */
+export const TOSS_SPEED = 3.0;
 export const TOSS_HEIGHT_ABOVE_PADDLE = 0.1;
 export const TOSS_Z_IN_FRONT_OF_PADDLE = 0.05;

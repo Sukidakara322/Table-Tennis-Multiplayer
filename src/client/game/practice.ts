@@ -84,6 +84,7 @@ export class PracticeSession {
 
     this.renderer = new GameRenderer(this.root);
     this.renderer.setViewPlayer(HUMAN);
+    this.renderer.setGlow(settings.glow);
 
     this.input = new PointerInput(this.root, {
       onLockChange: (locked) => this.handleLockChange(locked),
@@ -111,6 +112,10 @@ export class PracticeSession {
       onAimMarker: (enabled) => {
         this.aimMarker = enabled;
         saveSettings({ aimMarker: enabled });
+      },
+      onGlow: (value) => {
+        this.renderer.setGlow(value);
+        saveSettings({ glow: value });
       },
     });
 
