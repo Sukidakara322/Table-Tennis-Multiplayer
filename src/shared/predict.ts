@@ -1,4 +1,4 @@
-import { DT, REACH_FAR_Z } from './constants';
+import { DT, REACH_FAR_Z, REACH_IN_Z } from './constants';
 import { cloneBall, stepBall, type BallState, type PhysicsEvent } from './physics';
 import { reachNearZ } from './racket';
 import { copyVec3, type Vec3 } from './vec';
@@ -21,6 +21,24 @@ const MEET_INTO_REACH = 0.15;
  * Pass `alreadyBounced` when the ball has already bounced on the receiver's half.
  */
 export function predictMeetPoint(ball: BallState, alreadyBounced = false, bodyX = 0): MeetPoint | null {
+  const atTheEndLine = scan(ball, alreadyBounced, (x, y) => reachNearZ(x, y, bodyX), false);
+  if (atTheEndLine) return atTheEndLine;
+  // The ball dies before the end line: it can still be leaned in on over the table, but only once it
+  // has bounced (the same rule the paddle follows), and as late as possible so the lean stays short.
+  return scan(ball, alreadyBounced, () => REACH_IN_Z, true);
+}
+
+/**
+ * Walks the ball forward looking for a point inside a reach whose near edge is `nearOf`. Stops at the
+ * ball's second bounce on this half. `leaning` means the point must be after the bounce, and takes the
+ * latest one found rather than the first.
+ */
+function scan(
+  ball: BallState,
+  alreadyBounced: boolean,
+  nearOf: (x: number, y: number) => number,
+  leaning: boolean,
+): MeetPoint | null {
   const sim = cloneBall(ball);
   const events: PhysicsEvent[] = [];
   let bounces = alreadyBounced ? 1 : 0;
@@ -34,11 +52,12 @@ export function predictMeetPoint(ball: BallState, alreadyBounced = false, bodyX 
       if (event.type === 'floor' || event.type === 'side') bounces = 2;
     }
     if (bounces >= 2 || sim.pos.z > REACH_FAR_Z) break;
-    const near = reachNearZ(sim.pos.x, sim.pos.y, bodyX);
+    if (leaning && bounces < 1) continue;
+    const near = nearOf(sim.pos.x, sim.pos.y);
     if (sim.pos.z < near) continue;
 
     const point = { pos: copyVec3(sim.pos), time: i * DT };
-    if (sim.pos.z >= near + MEET_INTO_REACH) return point;
+    if (!leaning && sim.pos.z >= near + MEET_INTO_REACH) return point;
     lastInReach = point;
   }
   return lastInReach;

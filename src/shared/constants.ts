@@ -64,6 +64,13 @@ export const PADDLE_HIT_RADIUS = PADDLE_VISUAL_RADIUS + BALL_RADIUS;
  */
 export const REACH_NEAR_Z = HALF_LENGTH + 0.03;
 export const REACH_FAR_Z = HALF_LENGTH + 0.6;
+/**
+ * How far over the table you can follow a ball that has already bounced on your half, so a short ball
+ * dying before the end line can still be played. Only after the bounce, so reaching in can never become
+ * a volley, and only as fast as REACH_IN_SPEED: leaning in over the table costs time, it is not free.
+ */
+export const REACH_IN_Z = REACH_NEAR_Z - 0.95;
+export const REACH_IN_SPEED = 3.5;
 
 /**
  * The viewer's eye, in the viewer's local frame. Shared so the mouse mapping matches what is drawn.

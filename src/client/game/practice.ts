@@ -7,6 +7,8 @@ import {
   PADDLE_DEPTH_RETURN_SPEED,
   PADDLE_HIT_RADIUS,
   REACH_FAR_Z,
+  REACH_IN_SPEED,
+  REACH_IN_Z,
   BODY_FOLLOW_TIME,
   SERVE_BALL_HEIGHT,
   SERVE_BALL_Z,
@@ -258,6 +260,10 @@ export class PracticeSession {
    * exactly the ball's depth, so overlapping on screen means touching. Otherwise it glides back to the
    * start of the reach, which bends back along the arm arc when reaching wide, high or low.
    * The server's paddle sits at the toss depth.
+   *
+   * The reach stops at your end line until the ball bounces on your half; after that you lean in after
+   * it, out to REACH_IN_Z. That is what makes a ball dying short of the end line playable, and because
+   * the lean only starts after the bounce it can never turn into a volley.
    */
   private paddleDepth(player: PlayerIndex, ball: BallState): number {
     const paddle = this.paddles[player];
@@ -274,10 +280,20 @@ export class PracticeSession {
     // latch, moving the mouse (which bends the reach along the arm arc) would drop the ball mid-stroke.
     if (!this.travellingWithBall[player]) {
       const near = reachNearZ(paddle.aim.x, paddle.aim.y, this.bodyX[player]);
-      if (ball.pos.z < near) return glide(near);
-      this.travellingWithBall[player] = true;
+      if (ball.pos.z >= near) {
+        this.travellingWithBall[player] = true;
+      } else if (this.rally.stage !== 'awaitingReturn') {
+        return glide(near);
+      } else {
+        // Lean in at arm's speed instead of snapping onto the ball: a short ball has to be read early
+        // enough to get there, and while leaning the paddle is not yet at the ball's depth.
+        const target = Math.max(ball.pos.z, REACH_IN_Z);
+        const leaned = approach(paddle.pos.z, target, REACH_IN_SPEED * DT);
+        if (leaned > target) return leaned;
+        this.travellingWithBall[player] = true;
+      }
     }
-    return Math.min(ball.pos.z, REACH_FAR_Z);
+    return clamp(ball.pos.z, REACH_IN_Z, REACH_FAR_Z);
   }
 
   // ─── Ball ────────────────────────────────────────────────────────────────
