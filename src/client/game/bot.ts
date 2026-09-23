@@ -29,10 +29,10 @@ const PROFILES: Record<BotDifficulty, BotProfile> = {
 
 /** Where the bot waits (x, height), in its local frame. */
 const READY: Vec2 = { x: 0, y: PADDLE_READY_HEIGHT };
-/** The bot strikes its serve once the falling toss has dropped to about this height. */
-const SERVE_STRIKE_HEIGHT = 0.35;
-/** Paddle speed while swinging through a serve. */
-const SERVE_SWING_SPEED = 4;
+/** How far above or below the waiting ball the bot sets up before sweeping through it to serve. */
+const SERVE_WIND_UP = 0.22;
+/** Paddle speed while sweeping through a serve. */
+const SERVE_SWING_SPEED = 3.5;
 
 /**
  * Plays under the same rules as a human: it steers only left/right and height, its paddle travels in
@@ -47,8 +47,10 @@ export class BotController implements PaddleController {
   private plannedFor = -1;
   private reaction = 0;
   private serveDelay = 0;
-  private tossRequested = false;
-  private tossed = false;
+  private serveReady = false;
+  private serveSwinging = false;
+  private serveDirection = 1;
+  private serveX = 0;
 
   constructor(difficulty: BotDifficulty, seed = Date.now()) {
     this.profile = PROFILES[difficulty];
@@ -58,15 +60,10 @@ export class BotController implements PaddleController {
 
   resetForPoint(): void {
     this.serveDelay = 0.9 + this.rng() * 0.7;
-    this.tossRequested = false;
-    this.tossed = false;
+    this.serveReady = false;
+    this.serveSwinging = false;
+    this.serveX = (this.rng() * 2 - 1) * 0.4;
     this.plannedFor = -1;
-  }
-
-  consumeToss(): boolean {
-    const requested = this.tossRequested;
-    this.tossRequested = false;
-    return requested;
   }
 
   update(paddle: Paddle, ctx: ControllerContext): void {
@@ -76,20 +73,33 @@ export class BotController implements PaddleController {
     const { ball } = ctx;
 
     if (ctx.phase === 'serve' && ctx.isServer) {
-      this.target = { x: 0.25, y: SERVE_STRIKE_HEIGHT - 0.1 };
-      this.serveDelay -= ctx.dt;
-      if (this.serveDelay <= 0 && !this.tossed) {
-        this.tossed = true;
-        this.tossRequested = true;
+      // Set up above or below the waiting ball, then sweep through it: down for backspin, up for topspin.
+      if (!this.serveReady) {
         this.plannedSwing = this.planServe();
+        this.serveDirection = Math.sign(this.plannedSwing.y) || 1;
+        this.serveReady = true;
       }
-    } else if (ctx.phase === 'toss' && ctx.isServer) {
-      // Wait below the toss, then swing into the ball as it falls.
-      const falling = ball.vel.y < 0 && ball.pos.y < SERVE_STRIKE_HEIGHT + 0.2;
-      this.target = falling ? { x: ball.pos.x, y: ball.pos.y } : { x: ball.pos.x, y: SERVE_STRIKE_HEIGHT - 0.1 };
-      if (falling) {
+      const windUpY = ball.pos.y - this.serveDirection * SERVE_WIND_UP;
+      this.serveDelay -= ctx.dt;
+      // The sweep has to latch: leaving the wind-up spot is what a swing is, so re-checking "am I set
+      // up?" mid-stroke would pull the paddle straight back and it would only ever shiver in place.
+      if (!this.serveSwinging) {
+        const setUp = Math.abs(paddle.pos.y - windUpY) < 0.02 && Math.abs(paddle.pos.x - this.serveX) < 0.02;
+        this.serveSwinging = this.serveDelay <= 0 && setUp;
+      }
+      if (!this.serveSwinging) {
+        this.target = { x: this.serveX, y: windUpY };
+      } else {
+        this.target = { x: this.serveX, y: ball.pos.y + this.serveDirection * SERVE_WIND_UP };
         speed = SERVE_SWING_SPEED;
         paddle.swing = { ...this.plannedSwing };
+        // If the sweep somehow finished without touching the ball, wind up and try again rather than
+        // hanging above it with the ball still waiting.
+        if (Math.abs(paddle.pos.y - this.target.y) < 0.01) {
+          this.serveSwinging = false;
+          this.serveReady = false;
+          this.serveDelay = 0.4;
+        }
       }
     } else if (ctx.phase === 'rally' && ctx.meetPoint) {
       if (ctx.incomingId !== this.plannedFor) {
@@ -119,10 +129,9 @@ export class BotController implements PaddleController {
   /** Sidespin plus a vertical brush, like a human swinging through the toss. */
   private planServe(): Vec2 {
     const a = this.profile.aggression;
-    const x = (this.rng() * 2 - 1) * 2.5 * a;
-    let y = (this.rng() * 2 - 1) * 3.5 * a;
-    if (Math.abs(x) + Math.abs(y) < 1.2) y = 1.5;
-    return { x, y };
+    const chop = this.rng() < 0.35;
+    const vertical = (1.6 + this.rng() * 2 * a) * (chop ? -1 : 1);
+    return { x: (this.rng() * 2 - 1) * 2 * a, y: vertical };
   }
 
   private planReturn(ball: BallState, meetAt: Vec3): Vec2 {

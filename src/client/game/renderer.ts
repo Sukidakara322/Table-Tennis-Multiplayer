@@ -11,7 +11,10 @@ import {
   NET_HALF_SPAN,
   NET_HEIGHT,
   PADDLE_VISUAL_RADIUS,
+  AIM_PLANE_Z,
   AIM_X_LIMIT,
+  AIM_Y_MAX,
+  AIM_Y_MIN,
   VIEW_EYE_Y,
   VIEW_EYE_Z,
   TABLE_HEIGHT,
@@ -19,7 +22,7 @@ import {
   TABLE_THICKNESS,
   TABLE_WIDTH,
 } from '../../shared/constants';
-import { toWorldVec } from '../../shared/frames';
+import { toLocalVec, toWorldVec } from '../../shared/frames';
 import type { PaddleFace } from '../../shared/racket';
 import type { PlayerIndex } from '../../shared/types';
 import { clamp, type Vec2, type Vec3 } from '../../shared/vec';
@@ -41,10 +44,30 @@ const RUBBER_BLACK = 0x111217;
 const HANDLE_WOOD = 0xa8753f;
 /** Near-true ball size, so what you see overlapping the paddle is what the game counts as a hit. */
 const BALL_VISUAL_SCALE = 1.15;
-/** Camera sits at the shared eye position (VIEW_EYE_*), behind the player's end. */
-const CAMERA_FOV = 50;
-/** Point the camera looks at, in the viewer's local frame. */
-const CAMERA_LOOK_AT = { x: 0, y: 0.05, z: -1.1 };
+/**
+ * Camera sits at the shared eye position (VIEW_EYE_*), just behind the player's end and above it.
+ * Standing close is what makes the table read as long: how much narrower the far end looks than the
+ * near one depends only on where the eye is, never on the lens, so a distant camera flattens the table
+ * into a short slab however much you zoom. The lens then zooms back out (see `fitLens`).
+ */
+const CAMERA_LOOK_AT = { x: 0, y: -0.72, z: -0.9 };
+/**
+ * Everything that must stay on screen, in the viewer's local frame, with the screen margin to keep
+ * around it: the four table corners, the paddle's full range at its nearest depth (where it looks
+ * biggest), and headroom for a looping or lobbed ball.
+ */
+const FRAMED_POINTS: Array<[Vec3, number]> = [
+  ...[-HALF_WIDTH, HALF_WIDTH].flatMap((x) =>
+    [-HALF_LENGTH, HALF_LENGTH].map((z) => [{ x, y: 0, z }, 0.03] as [Vec3, number]),
+  ),
+  ...[-(AIM_X_LIMIT + PADDLE_VISUAL_RADIUS), AIM_X_LIMIT + PADDLE_VISUAL_RADIUS].flatMap((x) =>
+    [AIM_Y_MIN - PADDLE_VISUAL_RADIUS, AIM_Y_MAX + PADDLE_VISUAL_RADIUS].map(
+      (y) => [{ x, y, z: AIM_PLANE_Z }, 0.012] as [Vec3, number],
+    ),
+  ),
+  [{ x: 0, y: 0.9, z: 0 }, 0.02],
+  [{ x: 0, y: 0.75, z: HALF_LENGTH }, 0.02],
+];
 /** Bloom strength at glow level 1 (the ESC-menu slider scales it). */
 const BASE_BLOOM = 0.4;
 
@@ -52,9 +75,9 @@ const BASE_BLOOM = 0.4;
  * The camera stays still in normal play. Only when the viewer's paddle reaches out past this x (beyond
  * the table's side) does it pan towards that side, up to CAMERA_EDGE_PAN at the paddle's limit.
  */
-const CAMERA_EDGE_START = 1.0;
-const CAMERA_EDGE_PAN = 0.35;
-const CAMERA_EDGE_AIM = 0.15;
+const CAMERA_EDGE_START = 0.5;
+const CAMERA_EDGE_PAN = 0.3;
+const CAMERA_EDGE_AIM = 0.12;
 const CAMERA_FOLLOW_TIME = 0.35;
 
 export interface PaddleFrame {
@@ -81,6 +104,8 @@ function hdr(color: THREE.Color, intensity: number): THREE.Color {
 
 export class GameRenderer {
   readonly camera: THREE.PerspectiveCamera;
+  /** Same view without pan or shake; the mouse → paddle mapping is measured against this one. */
+  private readonly controlCamera: THREE.PerspectiveCamera;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly composer: EffectComposer;
   private readonly bloom: UnrealBloomPass;
@@ -96,6 +121,9 @@ export class GameRenderer {
   private readonly lookTarget = new THREE.Vector3();
   /** World direction of the viewer's local +x. */
   private readonly viewRight = new THREE.Vector3(1, 0, 0);
+  private viewPlayer: PlayerIndex = 0;
+  /** Cursor offset that lines the middle of the mouse range up with the middle of the paddle's range. */
+  private aimCursorOffsetY = 0;
   private follow = 0;
   private netFlash = 0;
   private shake = 0;
@@ -111,7 +139,9 @@ export class GameRenderer {
     this.scene.background = new THREE.Color(BACKGROUND);
     this.scene.fog = new THREE.FogExp2(BACKGROUND, 0.06);
 
-    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.01, 200);
+    // Both lenses are sized to the window in `resize`, which runs before the first frame.
+    this.camera = new THREE.PerspectiveCamera(50, 1, 0.01, 200);
+    this.controlCamera = new THREE.PerspectiveCamera(50, 1, 0.01, 200);
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -158,8 +188,56 @@ export class GameRenderer {
     this.camera.position.copy(this.cameraHome);
     this.camera.lookAt(this.lookTarget);
     this.camera.updateMatrixWorld();
+    // The control camera never pans or shakes: it is what the mouse mapping is measured against.
+    this.controlCamera.position.copy(this.cameraHome);
+    this.controlCamera.lookAt(this.lookTarget);
+    this.controlCamera.updateMatrixWorld();
+    this.viewPlayer = player;
+    this.updateAimCursorOffset(player);
     this.paddles[player].setLocalView(true);
     this.paddles[player === 0 ? 1 : 0].setLocalView(false);
+  }
+
+  /**
+   * Where the cursor points on the aim plane, in `player`'s local frame. This is the exact inverse of
+   * what is drawn, so the paddle moves pixel for pixel with the mouse in both axes. It uses the camera's
+   * home position, so the edge pan never feeds back into the player's aim.
+   */
+  cursorToAimPlane(cursor: Vec2, player: PlayerIndex): Vec2 {
+    // The camera looks down, so the middle of the screen meets the aim plane above any height a paddle
+    // can reach. The cursor is offset by a fixed amount before being projected, which puts the middle of
+    // the mouse range at the middle of the paddle's range. The paddle still sits exactly on a view ray,
+    // so it keeps moving pixel for pixel with the mouse.
+    return this.unprojectToAimPlane({ x: cursor.x, y: cursor.y + this.aimCursorOffsetY }, player);
+  }
+
+  private unprojectToAimPlane(cursor: Vec2, player: PlayerIndex): Vec2 {
+    const camera = this.controlCamera;
+    const worldZ = player === 0 ? AIM_PLANE_Z : -AIM_PLANE_Z;
+    const dir = new THREE.Vector3(cursor.x, cursor.y, 0.5).unproject(camera).sub(camera.position).normalize();
+    const t = Math.abs(dir.z) > 1e-6 ? (worldZ - camera.position.z) / dir.z : 0;
+    const local = toLocalVec(player, {
+      x: camera.position.x + dir.x * t,
+      y: camera.position.y + dir.y * t,
+      z: worldZ,
+    });
+    return { x: local.x, y: local.y };
+  }
+
+  /**
+   * Recomputed whenever the view changes: the cursor offset that puts the middle of the mouse range at
+   * the middle of the paddle's height range. Solved by bisection because the projection isn't linear.
+   */
+  private updateAimCursorOffset(player: PlayerIndex): void {
+    const wanted = (AIM_Y_MIN + AIM_Y_MAX) / 2;
+    let low = -2;
+    let high = 2;
+    for (let i = 0; i < 40; i++) {
+      const mid = (low + high) / 2;
+      if (this.unprojectToAimPlane({ x: 0, y: mid }, player).y < wanted) low = mid;
+      else high = mid;
+    }
+    this.aimCursorOffsetY = (low + high) / 2;
   }
 
   /** 0 = no glow, 1 = default, 2 = strong. */
@@ -211,11 +289,40 @@ export class GameRenderer {
     this.trail.clear();
   }
 
+  /**
+   * Picks the vertical field of view for this window rather than fixing it: the point of FRAMED_POINTS
+   * that needs the widest lens decides it, including the camera's edge-pan offsets. So the table, the
+   * paddle wherever the player puts it and a lobbed ball are always on screen, on any window shape.
+   */
+  private fitLens(aspect: number): number {
+    const eye = new THREE.Vector3(0, VIEW_EYE_Y, VIEW_EYE_Z);
+    const forward = new THREE.Vector3(CAMERA_LOOK_AT.x, CAMERA_LOOK_AT.y, CAMERA_LOOK_AT.z).sub(eye).normalize();
+    const right = forward.clone().cross(new THREE.Vector3(0, 1, 0)).normalize();
+    const up = right.clone().cross(forward);
+    const offset = new THREE.Vector3();
+    let tan = 0;
+    for (const panX of [-CAMERA_EDGE_PAN, 0, CAMERA_EDGE_PAN]) {
+      for (const [point, margin] of FRAMED_POINTS) {
+        offset.set(point.x - panX, point.y - eye.y, point.z - eye.z);
+        const depth = offset.dot(forward);
+        if (depth <= 0.05) continue;
+        const usable = depth * (1 - 2 * margin);
+        tan = Math.max(tan, Math.abs(offset.dot(up)) / usable, Math.abs(offset.dot(right)) / (usable * aspect));
+      }
+    }
+    return THREE.MathUtils.radToDeg(Math.atan(tan)) * 2;
+  }
+
   resize = (): void => {
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
     this.camera.aspect = width / height;
+    this.camera.fov = this.fitLens(this.camera.aspect);
     this.camera.updateProjectionMatrix();
+    this.controlCamera.aspect = this.camera.aspect;
+    this.controlCamera.fov = this.camera.fov;
+    this.controlCamera.updateProjectionMatrix();
+    this.updateAimCursorOffset(this.viewPlayer);
     this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());

@@ -28,7 +28,7 @@ export interface PaddleFace {
  * straight ahead, pulled only slightly towards the middle. Expressed as a sideways shift over a typical
  * shot length: a 3 m/s swipe moves the landing point ~0.9 m, enough to go corner to corner.
  */
-const AIM_SHIFT_PER_SWIPE = 0.3;
+const AIM_SHIFT_PER_SWIPE = 0.45;
 const CENTRE_PULL = 0.5;
 const AIM_REFERENCE_LENGTH = 2.7;
 /** Face opens on low balls and closes on high ones, around this height. */

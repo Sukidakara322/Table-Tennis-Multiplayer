@@ -8,6 +8,7 @@ import {
   PADDLE_READY_HEIGHT,
   REACH_FAR_Z,
   REACH_NEAR_Z,
+  SERVE_BALL_HEIGHT,
   SERVE_BALL_Z,
 } from './constants';
 import { toLocalBall } from './frames';
@@ -15,6 +16,7 @@ import { computeReturn } from './hit';
 import { stepBall, type BallState, type PhysicsEvent } from './physics';
 import { predictMeetPoint } from './predict';
 import { paddleFace, reachNearZ } from './racket';
+import { closestApproach } from './vec';
 
 function ball(pos: [number, number, number], vel: [number, number, number], spin: [number, number, number] = [0, 0, 0]): BallState {
   return {
@@ -94,6 +96,30 @@ describe('ball physics', () => {
     expect(back.pos.x).toBeCloseTo(world.pos.x, 9);
     expect(back.pos.y).toBeCloseTo(world.pos.y, 9);
     expect(back.pos.z).toBeCloseTo(world.pos.z, 9);
+  });
+});
+
+describe('contact sweep', () => {
+  it('finds the moment the gap is smallest, even when it is mid-step', () => {
+    // Ball and paddle pass each other: 10 cm apart one way at the start, 10 cm the other way at the end.
+    expect(closestApproach({ x: -0.1, y: 0 }, { x: 0.1, y: 0 })).toBeCloseTo(0.5, 9);
+    // Closing in: closest at the end of the step.
+    expect(closestApproach({ x: 0.3, y: 0 }, { x: 0.05, y: 0 })).toBeCloseTo(1, 9);
+    // Moving apart: closest at the start.
+    expect(closestApproach({ x: 0.05, y: 0 }, { x: 0.3, y: 0 })).toBeCloseTo(0, 9);
+    // Crossing diagonally still lands between the samples.
+    const t = closestApproach({ x: -0.2, y: 0.12 }, { x: 0.2, y: -0.12 });
+    expect(t).toBeGreaterThan(0.4);
+    expect(t).toBeLessThan(0.6);
+  });
+
+  it('would have been missed by sampling only the ends of the step', () => {
+    // A 17 m/s ball and a 9 m/s swing: 7 cm apart at both ends, but they touch in between.
+    const start = { x: -0.07, y: 0.02 };
+    const end = { x: 0.07, y: -0.02 };
+    const gapAt = (t: number) => Math.hypot(start.x + (end.x - start.x) * t, start.y + (end.y - start.y) * t);
+    expect(Math.min(gapAt(0), gapAt(1))).toBeGreaterThan(0.07);
+    expect(gapAt(closestApproach(start, end))).toBeLessThan(0.03);
   });
 });
 
@@ -179,7 +205,7 @@ describe('racket posture', () => {
   });
 
   it('lets a serve from the left corner go to the right corner', () => {
-    const serve = landingX([-0.6, 0.3, SERVE_BALL_Z], [0, -3.5, 0], { x: 3, y: 1.5 }, true);
+    const serve = landingX([-0.6, SERVE_BALL_HEIGHT, SERVE_BALL_Z], [0, 0, 0], { x: 3, y: 1.5 }, true);
     expect(serve).not.toBeNull();
     expect(serve!).toBeGreaterThan(0.2);
   });
@@ -219,10 +245,10 @@ describe('racket returns', () => {
       { x: 0, y: 5 },
       { x: -3, y: -3 },
     ];
-    // A 0.8 m toss struck low (just above the table) and high (well above net height).
+    // The ball waits at serve height and is struck by a paddle sweeping up or down through it.
     const contacts: Array<[number, number]> = [
-      [0.15, -4.2],
-      [0.45, -3.4],
+      [SERVE_BALL_HEIGHT, 0],
+      [SERVE_BALL_HEIGHT - 0.08, 0],
     ];
     for (const [height, fallSpeed] of contacts) {
       for (const swing of swings) {

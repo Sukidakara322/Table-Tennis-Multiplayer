@@ -11,7 +11,7 @@ export interface PracticeChoice {
 
 export const CONTROLS_HELP: Array<[string, string]> = [
   ['Mouse', 'Move the paddle left/right and up/down'],
-  ['Click', 'Toss the ball, then swing through it to serve'],
+  ['Serving', 'Move sideways to place the ball, then flick up or down through it'],
   ['Swing up', 'Topspin'],
   ['Swing down', 'Backspin'],
   ['Swing sideways', 'Sidespin and aim'],

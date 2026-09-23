@@ -13,10 +13,12 @@ import {
 } from '../../shared/constants';
 import type { BallState } from '../../shared/physics';
 import type { MeetPoint } from '../../shared/predict';
-import { clamp, lerp, vec3, type Vec2, type Vec3 } from '../../shared/vec';
+import type { PlayerIndex } from '../../shared/types';
+import { clamp, vec3, type Vec2, type Vec3 } from '../../shared/vec';
 import type { PointerInput } from './input';
+import type { GameRenderer } from './renderer';
 
-export type GamePhase = 'serve' | 'toss' | 'rally' | 'point' | 'over';
+export type GamePhase = 'serve' | 'rally' | 'point' | 'over';
 
 /** A paddle in its owner's local frame (own end of the table at +z). */
 export interface Paddle {
@@ -63,17 +65,7 @@ export interface ControllerContext {
 export interface PaddleController {
   /** Moves the paddle in x and height and sets its swing. Depth is set by the game beforehand. */
   update(paddle: Paddle, ctx: ControllerContext): void;
-  /** True once when the controller wants to toss the ball for its serve. */
-  consumeToss(): boolean;
   resetForPoint(): void;
-}
-
-/** Maps the virtual cursor across the whole mouse range onto x/height on the aim plane. */
-export function cursorToAim(cursor: Vec2): Vec2 {
-  return {
-    x: cursor.x * AIM_X_LIMIT,
-    y: lerp(AIM_Y_MIN, AIM_Y_MAX, (cursor.y + 1) / 2),
-  };
 }
 
 /** How much a sideways/vertical distance on the aim plane shrinks (or grows) at `depth` along the line of sight. */
@@ -87,39 +79,32 @@ export function onLineOfSight(aim: Vec2, depth: number): Vec2 {
   return { x: aim.x * k, y: VIEW_EYE_Y + (aim.y - VIEW_EYE_Y) * k };
 }
 
-/** Time constant of the paddle easing towards the cursor: softens jitter, adds only a few ms of lag. */
-const FOLLOW_TIME = 0.03;
 const SWING_WINDOW_MS = 50;
 
 /**
- * The mouse aims; the paddle eases after it and sits on that line of sight at whatever depth the game
- * gives it, so it stays exactly where you put it on screen while it travels with the ball.
+ * The mouse aims the paddle with no easing at all: the cursor is projected straight onto the aim plane,
+ * so the paddle moves exactly as far and as fast on screen as the mouse does. It then sits on that line
+ * of sight at whatever depth the game gives it, staying where you put it on screen while it travels
+ * with the ball.
  */
 export class HumanController implements PaddleController {
-  private tossRequested = false;
   private history: Array<{ t: number; x: number; y: number }> = [];
 
-  constructor(private readonly input: PointerInput) {}
-
-  requestToss(): void {
-    this.tossRequested = true;
-  }
-
-  consumeToss(): boolean {
-    const requested = this.tossRequested;
-    this.tossRequested = false;
-    return requested;
-  }
+  constructor(
+    private readonly input: PointerInput,
+    private readonly renderer: GameRenderer,
+    private readonly player: PlayerIndex,
+  ) {}
 
   resetForPoint(): void {
-    this.tossRequested = false;
+    this.history.length = 0;
   }
 
   update(paddle: Paddle, ctx: ControllerContext): void {
-    const target = cursorToAim(this.input.cursorAt(ctx.wallTime));
-    const k = 1 - Math.exp(-ctx.dt / FOLLOW_TIME);
-    paddle.aim.x += (target.x - paddle.aim.x) * k;
-    paddle.aim.y += (target.y - paddle.aim.y) * k;
+    // Straight to where the cursor points, this instant: no easing, no lag of our own.
+    const aim = this.renderer.cursorToAimPlane(this.input.cursorAt(ctx.wallTime), this.player);
+    paddle.aim.x = clamp(aim.x, -AIM_X_LIMIT, AIM_X_LIMIT);
+    paddle.aim.y = clamp(aim.y, AIM_Y_MIN, AIM_Y_MAX);
 
     const onScreen = onLineOfSight(paddle.aim, paddle.pos.z);
     paddle.pos.x = onScreen.x;

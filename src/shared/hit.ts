@@ -1,7 +1,14 @@
-import { BALL_RADIUS, DT, HALF_LENGTH, HALF_WIDTH, MAX_SPIN } from './constants';
+import { BALL_RADIUS, BALL_SLOWDOWN, DT, HALF_LENGTH, HALF_WIDTH, MAX_SPIN } from './constants';
 import { stepBall, type BallState, type PhysicsEvent, type StepOptions } from './physics';
 import { faceNormal, type PaddleFace } from './racket';
 import { clamp, copyVec3, cross3, length3, type Vec2, type Vec3 } from './vec';
+
+/**
+ * Launch speeds are written at the pace they would have under real gravity, then scaled to the game's
+ * slower ball. Paddle speeds come from the player's hand and are never scaled, so anything converting
+ * hand motion into ball motion (pace, lift, spin kick) is quoted this way too.
+ */
+const slow = (realPace: number) => realPace / BALL_SLOWDOWN;
 
 /**
  * Racket contact model. All functions work in the hitter's local frame:
@@ -16,31 +23,34 @@ export const HIT_TUNING = {
   maxSwing: 10,
   /** A serve only connects when the paddle moves at least this fast. */
   serveMinSwing: 0.6,
-  /** Serves are struck low (paddle height); slower than ~5 m/s they can't legally clear the net. */
-  servePower: { base: 5, perSwing: 0.4, min: 5, max: 8 },
-  rallyPower: { base: 2.4, perIncoming: 0.3, perSwing: 0.95, min: 3.2, max: 17 },
-  /** rad/s of spin per m/s of paddle motion brushing across the racket face (any direction). */
-  brushSpin: 70,
-  /** Extra launch speed per m/s of paddle motion driving into the face instead of across it. */
-  throughPower: 0.4,
   /**
-   * Fraction of its own sideways curve the aim corrects for. Half: the bend stays clearly visible and
-   * a strong curve can still carry the ball wide of the aim.
+   * Speeds are deliberately gentle: a rally ball crosses the table in about three quarters of a second,
+   * which leaves time to read the spin, shape a stroke and watch the ball bend.
    */
-  curveAwareness: 0.5,
+  servePower: { base: slow(4.2), perSwing: slow(0.4), min: slow(4.2), max: slow(7) },
+  rallyPower: { base: slow(2.2), perIncoming: 0.25, perSwing: slow(0.6), min: slow(2.8), max: slow(9) },
+  /** rad/s of spin per m/s of paddle motion brushing across the racket face (any direction). */
+  brushSpin: 90,
+  /** Extra launch speed per m/s of paddle motion driving into the face instead of across it. */
+  throughPower: slow(0.4),
+  /**
+   * Fraction of its own sideways curve the aim corrects for. Under half: the bend is clearly visible
+   * and a heavy curve still carries the ball wide of where it was aimed.
+   */
+  curveAwareness: 0.6,
   /** Fraction of incoming spin carried into the return (the rubber reverses it). */
   spinReturn: -0.35,
   /** How strongly incoming spin deflects the ball off the racket. */
-  spinKick: 0.15,
+  spinKick: slow(0.15),
   /** Vertical launch speed added per m/s of upward swing. */
-  liftPerSwing: 0.22,
+  liftPerSwing: slow(0.22),
   /** Serves fly exactly as solved (their net clearance is checked); swing and face shape them through spin. */
   serveLiftScale: 0,
   /** Launch errors per metre of distance from the racket centre. */
-  offCenterLift: 2.0,
+  offCenterLift: slow(2.0),
   offCenterAim: 1.0,
   /** Vertical launch speed added per radian the racket face is opened (negative when closed). */
-  faceLift: 1.4,
+  faceLift: slow(1.4),
   /** How much of its own spin the aim solver compensates for; the rest is player skill. */
   solverSpinAwareness: 0.7,
   /** Serves are set pieces: the solver fully accounts for their spin. */
@@ -111,7 +121,9 @@ export function computeReturn({ contact, swing, offset, face, isServe }: ReturnI
   const aware = isServe ? T.serveSpinAwareness : T.solverSpinAwareness;
   const solverSpin = { x: spin.x * aware, y: spin.y * aware, z: spin.z * aware };
   const solveVy = (launchVx: number) =>
-    isServe ? solveServeVy(pos, launchVx, vz, solverSpin, targetZ) : solveLaunchVy(pos, launchVx, vz, solverSpin, targetZ, -6, 7);
+    isServe
+      ? solveServeVy(pos, launchVx, vz, solverSpin, targetZ)
+      : solveLaunchVy(pos, launchVx, vz, solverSpin, targetZ, slow(-6), slow(7));
   // An open face (low ball) lifts the return, a closed face (high ball) drives it down.
   const lift = (sy * T.liftPerSwing + face.pitch * T.faceLift) * (isServe ? T.serveLiftScale : 1);
   const extraVy = lift + offset.y * T.offCenterLift;
@@ -175,7 +187,7 @@ function firstContactZ(pos: Vec3, vx: number, vy: number, vz: number, spin: Vec3
 const SERVE_CANDIDATES = 16;
 /** First-bounce candidates as a fraction of the server's half, from near the net to near the end line. */
 const SERVE_FIRST_BOUNCE_RANGE: [number, number] = [0.08, 0.99];
-const SERVE_VY_RANGE: [number, number] = [-5, 4];
+const SERVE_VY_RANGE: [number, number] = [slow(-5), slow(4)];
 
 /**
  * A serve must bounce on both halves, which is not monotonic in vy. Try first-bounce points
@@ -187,12 +199,22 @@ function solveServeVy(pos: Vec3, vx: number, vz: number, spin: Vec3, targetZ: nu
   const [lo, hi] = SERVE_VY_RANGE;
   let bestVy = solveLaunchVy(pos, vx, vz, spin, HALF_LENGTH * 0.6, lo, hi);
   let bestError = Infinity;
+  // When a swing is too weak or too heavily loaded to serve legally at all, fall back to the launch
+  // that at least carries furthest rather than one that was never simulated: the serve still fails,
+  // but it fails the way that swing deserves instead of dumping into the net from a knife edge.
+  let bestReach = Infinity;
   for (let i = 0; i < SERVE_CANDIDATES; i++) {
     const [near, far] = SERVE_FIRST_BOUNCE_RANGE;
     const firstBounceZ = HALF_LENGTH * (near + ((far - near) * i) / (SERVE_CANDIDATES - 1));
     const vy = solveLaunchVy(pos, vx, vz, spin, firstBounceZ, lo, hi);
-    const secondZ = serveSecondBounceZ(pos, vx, vy, vz, spin);
-    if (secondZ === null) continue;
+    const { secondZ, reach } = serveOutcome(pos, vx, vy, vz, spin);
+    if (secondZ === null) {
+      if (bestError === Infinity && reach < bestReach) {
+        bestReach = reach;
+        bestVy = vy;
+      }
+      continue;
+    }
     const error = Math.abs(secondZ - targetZ);
     if (error < bestError) {
       bestError = error;
@@ -202,22 +224,30 @@ function solveServeVy(pos: Vec3, vx: number, vz: number, spin: Vec3, targetZ: nu
   return bestVy;
 }
 
-/** z of a serve's bounce on the receiver's half, or null if it fails before getting there. */
-function serveSecondBounceZ(pos: Vec3, vx: number, vy: number, vz: number, spin: Vec3): number | null {
+/** How a candidate serve turns out: where it lands on the receiver's half, and how far it got. */
+function serveOutcome(
+  pos: Vec3,
+  vx: number,
+  vy: number,
+  vz: number,
+  spin: Vec3,
+): { secondZ: number | null; reach: number } {
   const ball: BallState = { pos: copyVec3(pos), vel: { x: vx, y: vy, z: vz }, spin: copyVec3(spin) };
   const events: PhysicsEvent[] = [];
   let ownBounce = false;
+  let reach = pos.z;
   for (let i = 0; i < SOLVER_MAX_STEPS; i++) {
     stepBall(ball, events);
+    reach = Math.min(reach, ball.pos.z);
     for (const event of events) {
-      if (event.type === 'net' || event.type === 'floor' || event.type === 'side') return null;
+      if (event.type === 'net' || event.type === 'floor' || event.type === 'side') return { secondZ: null, reach };
       if (event.type !== 'table') continue;
       if (!ownBounce && event.side === 0) ownBounce = true;
-      else return event.side === 1 && ownBounce ? event.pos.z : null;
+      else return { secondZ: event.side === 1 && ownBounce ? event.pos.z : null, reach };
     }
     events.length = 0;
   }
-  return null;
+  return { secondZ: null, reach };
 }
 
 /** Bisection on vertical launch speed: more vy carries the ball further towards -z. */

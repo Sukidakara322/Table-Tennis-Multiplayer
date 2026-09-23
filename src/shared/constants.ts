@@ -24,11 +24,21 @@ export const DT = 1 / PHYSICS_HZ;
 export const MAX_SUBSTEPS = 32;
 
 // Forces. Only + - * / and sqrt are used in the step so results match across JS engines.
-export const GRAVITY = 9.81;
+/**
+ * Below real gravity on purpose. Every launch speed is divided by BALL_SLOWDOWN and gravity by its
+ * square, which is exactly the scaling that leaves the shape of every trajectory untouched while each
+ * flight takes that much longer: the same strokes, the same arcs, the same landing spots, but time to
+ * read the spin and shape a stroke instead of a ball that crosses the table the moment it is hit.
+ */
+export const BALL_SLOWDOWN = 1.4;
+export const GRAVITY = 9.81 / (BALL_SLOWDOWN * BALL_SLOWDOWN);
 /** Air drag: a = -DRAG_K * |v| * v */
 export const DRAG_K = 0.11;
-/** Magnus effect: a = MAGNUS_K * (spin × v) */
-export const MAGNUS_K = 0.0035;
+/**
+ * Magnus effect: a = MAGNUS_K * (spin × v). Generous on purpose: with the slower ball it gives topspin a
+ * clear dip, backspin a floating "parachute" and sidespin a bend you can see and play with.
+ */
+export const MAGNUS_K = 0.006;
 /** Per-step spin decay, roughly 10% per second. */
 export const SPIN_DAMPING = 0.99958;
 export const MAX_SPIN = 600;
@@ -41,7 +51,7 @@ export const FLOOR_FRICTION = 0.8;
 export const NET_CORD_RESTITUTION = 0.35;
 export const NET_BODY_RESTITUTION = 0.12;
 /** Impacts slower than this settle the ball instead of bouncing (and emit no event). */
-export const REST_SPEED = 0.15;
+export const REST_SPEED = 0.15 / BALL_SLOWDOWN;
 
 // Paddle zone, expressed in a player's local frame (own end of the table at +z)
 export const PADDLE_VISUAL_RADIUS = 0.078;
@@ -55,30 +65,39 @@ export const PADDLE_HIT_RADIUS = PADDLE_VISUAL_RADIUS + BALL_RADIUS;
 export const REACH_NEAR_Z = HALF_LENGTH + 0.03;
 export const REACH_FAR_Z = HALF_LENGTH + 0.6;
 
-/** The viewer's eye, in the viewer's local frame. Shared so the mouse mapping matches what is drawn. */
-export const VIEW_EYE_Y = 1.6;
-export const VIEW_EYE_Z = HALF_LENGTH + 2.3;
 /**
- * The mouse aims the paddle on this plane (the start of the reach): x ±AIM_X_LIMIT and height
- * AIM_Y_MIN..AIM_Y_MAX across the whole mouse range. At any other depth the paddle stays on the same
- * line of sight from the eye, so it never slides on screen while it travels with the ball.
+ * The viewer's eye, in the viewer's local frame. Shared so the mouse mapping matches what is drawn.
+ * Standing close behind your own end and looking down on the table (~28°) is what makes it read as a
+ * long table: the far end then looks about 40% as wide as the near one, where a camera parked metres
+ * back flattens it to 55% however narrow the lens. The lens zooms back out instead (see `fitLens`).
+ */
+export const VIEW_EYE_Y = 1.25;
+export const VIEW_EYE_Z = HALF_LENGTH + 1.6;
+/**
+ * The mouse aims the paddle on this plane (the start of the reach). The cursor is projected onto it
+ * through the camera, so the paddle moves pixel for pixel with the mouse; the limits below are just
+ * how far it can go. At any other depth the paddle stays on the same line of sight from the eye, so it
+ * never slides on screen while it travels with the ball.
  */
 export const AIM_PLANE_Z = REACH_NEAR_Z;
-export const AIM_X_LIMIT = 1.7;
-export const AIM_Y_MIN = -0.45;
-export const AIM_Y_MAX = 0.75;
+/** Sideways reach: the table's half width plus a step outside it, and all of it fits on screen. */
+export const AIM_X_LIMIT = 0.85;
+/** Height range: low enough to dig out a low ball, capped so swings stay controlled. */
+export const AIM_Y_MIN = -0.3;
+export const AIM_Y_MAX = 0.55;
 /** Hard world bounds for the paddle wherever it is. */
-export const PADDLE_X_LIMIT = 1.8;
-export const PADDLE_Y_MIN = -0.5;
-export const PADDLE_Y_MAX = 1.0;
+export const PADDLE_X_LIMIT = 0.95;
+export const PADDLE_Y_MIN = -0.35;
+export const PADDLE_Y_MAX = 0.6;
 /** Speed at which the paddle glides back to the start of its reach when not riding with the ball. */
 export const PADDLE_DEPTH_RETURN_SPEED = 6;
 export const PADDLE_READY_HEIGHT = 0.3;
 /**
  * Arm arc: reaching wide or very high/low pulls the paddle back towards the body by up to this much,
- * so the paddle moves on a curved surface around the player rather than a flat plane.
+ * so the paddle moves on a curved surface around the player rather than a flat plane. Kept small: it
+ * shifts where the reach starts, and a big shift used to pull the paddle off a ball mid-stroke.
  */
-export const ARM_ARC_DEPTH = 0.25;
+export const ARM_ARC_DEPTH = 0.08;
 /** Comfortable reach from the body centre before the arc is fully bent (sideways, vertically). */
 export const ARM_REACH_X = 0.8;
 export const ARM_REACH_Y = 0.45;
@@ -88,9 +107,11 @@ export const BODY_FOLLOW_TIME = 0.4;
 export const HIT_COOLDOWN = 0.3;
 
 // Serve
-/** The ball is tossed from this depth behind the end line; the server's paddle sits at the same depth. */
+/**
+ * The ball waits here until it is struck: behind the end line, at a fixed height, and following the
+ * server sideways so they choose where to serve from. Moving the paddle up or down through it serves.
+ */
 export const SERVE_BALL_Z = HALF_LENGTH + 0.15;
-/** Before the toss the ball rests this far above the paddle and follows it. */
-export const TOSS_HEIGHT_ABOVE_PADDLE = 0.12;
-/** Launch speed of the serve toss: rises ~0.8 m above the hand (ITTF minimum is 0.16 m). */
-export const TOSS_SPEED = 4.0;
+export const SERVE_BALL_HEIGHT = 0.3;
+/** How fast the paddle must be moving up or down to strike the waiting ball. */
+export const SERVE_MIN_FLICK = 1.2;
