@@ -11,10 +11,10 @@ import {
   NET_HALF_SPAN,
   NET_HEIGHT,
   PADDLE_VISUAL_RADIUS,
-  AIM_PLANE_Z,
   AIM_X_LIMIT,
-  AIM_Y_MAX,
-  AIM_Y_MIN,
+  hoverAt,
+  REACH_FAR_Z,
+  REACH_IN_Z,
   VIEW_EYE_Y,
   VIEW_EYE_Z,
   TABLE_HEIGHT,
@@ -45,6 +45,15 @@ const HANDLE_WOOD = 0xa8753f;
 /** Near-true ball size, so what you see overlapping the paddle is what the game counts as a hit. */
 const BALL_VISUAL_SCALE = 1.15;
 /**
+ * How the racket is carried, in radians: laid over by this much at the very edge of the reach, plus
+ * this much more per m/s of a sideways drag, up to the limit. Upright in the middle of the table.
+ */
+const GRIP_LEAN_OUT_WIDE = 0.6;
+const BLADE_LEAN_PER_SPEED = 0.07;
+const GRIP_LEAN_LIMIT = 0.95;
+/** Blade centre to the end of the grip, which is what has to clear the table when reaching in. */
+const GRIP_LENGTH = PADDLE_VISUAL_RADIUS + 0.08;
+/**
  * Camera sits at the shared eye position (VIEW_EYE_*), just behind the player's end and above it.
  * Standing close is what makes the table read as long: how much narrower the far end looks than the
  * near one depends only on where the eye is, never on the lens, so a distant camera flattens the table
@@ -61,8 +70,8 @@ const FRAMED_POINTS: Array<[Vec3, number]> = [
     [-HALF_LENGTH, HALF_LENGTH].map((z) => [{ x, y: 0, z }, 0.03] as [Vec3, number]),
   ),
   ...[-(AIM_X_LIMIT + PADDLE_VISUAL_RADIUS), AIM_X_LIMIT + PADDLE_VISUAL_RADIUS].flatMap((x) =>
-    [AIM_Y_MIN - PADDLE_VISUAL_RADIUS, AIM_Y_MAX + PADDLE_VISUAL_RADIUS].map(
-      (y) => [{ x, y, z: AIM_PLANE_Z }, 0.012] as [Vec3, number],
+    [REACH_IN_Z, REACH_FAR_Z].map(
+      (z) => [{ x, y: hoverAt(z) + PADDLE_VISUAL_RADIUS, z }, 0.012] as [Vec3, number],
     ),
   ),
   [{ x: 0, y: 0.9, z: 0 }, 0.02],
@@ -72,13 +81,16 @@ const FRAMED_POINTS: Array<[Vec3, number]> = [
 const BASE_BLOOM = 0.4;
 
 /**
- * The camera stays still in normal play. Only when the viewer's paddle reaches out past this x (beyond
- * the table's side) does it pan towards that side, up to CAMERA_EDGE_PAN at the paddle's limit.
+ * The camera drifts sideways with the ball while it is on the viewer's half, and back to the middle
+ * once it has gone. CAMERA_EDGE_PAN is how far the eye slides, CAMERA_EDGE_AIM how far the point it
+ * looks at slides with it, CAMERA_FOLLOW_FADE how far up the table the ball still counts as coming to
+ * you, and CAMERA_RACKET_SHARE how much of the drift your own racket's position is worth.
  */
-const CAMERA_EDGE_START = 0.5;
-const CAMERA_EDGE_PAN = 0.3;
-const CAMERA_EDGE_AIM = 0.12;
-const CAMERA_FOLLOW_TIME = 0.35;
+const CAMERA_EDGE_PAN = 0.34;
+const CAMERA_EDGE_AIM = 0.22;
+const CAMERA_FOLLOW_TIME = 0.4;
+const CAMERA_FOLLOW_FADE = 0.7;
+const CAMERA_RACKET_SHARE = 0.35;
 
 export interface PaddleFrame {
   /** World position. */
@@ -122,8 +134,6 @@ export class GameRenderer {
   /** World direction of the viewer's local +x. */
   private readonly viewRight = new THREE.Vector3(1, 0, 0);
   private viewPlayer: PlayerIndex = 0;
-  /** Cursor offset that lines the middle of the mouse range up with the middle of the paddle's range. */
-  private aimCursorOffsetY = 0;
   private follow = 0;
   private netFlash = 0;
   private shake = 0;
@@ -193,51 +203,8 @@ export class GameRenderer {
     this.controlCamera.lookAt(this.lookTarget);
     this.controlCamera.updateMatrixWorld();
     this.viewPlayer = player;
-    this.updateAimCursorOffset(player);
     this.paddles[player].setLocalView(true);
     this.paddles[player === 0 ? 1 : 0].setLocalView(false);
-  }
-
-  /**
-   * Where the cursor points on the aim plane, in `player`'s local frame. This is the exact inverse of
-   * what is drawn, so the paddle moves pixel for pixel with the mouse in both axes. It uses the camera's
-   * home position, so the edge pan never feeds back into the player's aim.
-   */
-  cursorToAimPlane(cursor: Vec2, player: PlayerIndex): Vec2 {
-    // The camera looks down, so the middle of the screen meets the aim plane above any height a paddle
-    // can reach. The cursor is offset by a fixed amount before being projected, which puts the middle of
-    // the mouse range at the middle of the paddle's range. The paddle still sits exactly on a view ray,
-    // so it keeps moving pixel for pixel with the mouse.
-    return this.unprojectToAimPlane({ x: cursor.x, y: cursor.y + this.aimCursorOffsetY }, player);
-  }
-
-  private unprojectToAimPlane(cursor: Vec2, player: PlayerIndex): Vec2 {
-    const camera = this.controlCamera;
-    const worldZ = player === 0 ? AIM_PLANE_Z : -AIM_PLANE_Z;
-    const dir = new THREE.Vector3(cursor.x, cursor.y, 0.5).unproject(camera).sub(camera.position).normalize();
-    const t = Math.abs(dir.z) > 1e-6 ? (worldZ - camera.position.z) / dir.z : 0;
-    const local = toLocalVec(player, {
-      x: camera.position.x + dir.x * t,
-      y: camera.position.y + dir.y * t,
-      z: worldZ,
-    });
-    return { x: local.x, y: local.y };
-  }
-
-  /**
-   * Recomputed whenever the view changes: the cursor offset that puts the middle of the mouse range at
-   * the middle of the paddle's height range. Solved by bisection because the projection isn't linear.
-   */
-  private updateAimCursorOffset(player: PlayerIndex): void {
-    const wanted = (AIM_Y_MIN + AIM_Y_MAX) / 2;
-    let low = -2;
-    let high = 2;
-    for (let i = 0; i < 40; i++) {
-      const mid = (low + high) / 2;
-      if (this.unprojectToAimPlane({ x: 0, y: mid }, player).y < wanted) low = mid;
-      else high = mid;
-    }
-    this.aimCursorOffsetY = (low + high) / 2;
   }
 
   /** 0 = no glow, 1 = default, 2 = strong. */
@@ -256,10 +223,10 @@ export class GameRenderer {
     this.netFlash = Math.max(0, this.netFlash - dt * 3);
     this.netCord.material.color.copy(hdr(LINE_WHITE, 1 + this.netFlash * 1.5));
 
-    // Pan only when the viewer reaches out to an extreme side (never follows the ball).
-    const beyond = Math.max(0, Math.abs(frame.followX) - CAMERA_EDGE_START) / (AIM_X_LIMIT - CAMERA_EDGE_START);
-    const edge = Math.sign(frame.followX) * Math.min(1, beyond);
-    this.follow += (edge - this.follow) * (1 - Math.exp(-dt / CAMERA_FOLLOW_TIME));
+    // The view drifts across your own half towards the ball as it comes to you, and settles back to the
+    // middle once it has gone: enough to make the side you are being played to feel like a place you
+    // have to move to, without the camera chasing every shot.
+    this.follow += (this.followTarget(frame) - this.follow) * (1 - Math.exp(-dt / CAMERA_FOLLOW_TIME));
     this.shake = Math.max(0, this.shake - dt * 2.5);
     const s = this.shake * this.shake * 0.02;
     this.camera.position
@@ -268,6 +235,20 @@ export class GameRenderer {
       .add(new THREE.Vector3((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, 0));
     this.camera.lookAt(this.lookTarget.clone().addScaledVector(this.viewRight, this.follow * CAMERA_EDGE_AIM));
     this.composer.render(dt);
+  }
+
+  /**
+   * Where the view wants to sit, as a fraction of the pan either side of centre: towards the ball while
+   * it is on the viewer's half, fading back to the middle as it crosses to the other end. The racket's
+   * own position pulls a little too, so reaching wide shows you the space you have left open.
+   */
+  private followTarget(frame: RenderFrame): number {
+    const toRacket = clamp(frame.followX / AIM_X_LIMIT, -1, 1) * CAMERA_RACKET_SHARE;
+    if (!frame.ball) return clamp(toRacket, -1, 1);
+    const ball = toLocalVec(this.viewPlayer, frame.ball.pos);
+    const onMySide = clamp((ball.z + CAMERA_FOLLOW_FADE) / (HALF_LENGTH + CAMERA_FOLLOW_FADE), 0, 1);
+    const toBall = clamp(ball.x / HALF_WIDTH, -1, 1) * onMySide;
+    return clamp(toBall + toRacket, -1, 1);
   }
 
   hitEffect(pos: Vec3, player: PlayerIndex, strength: number): void {
@@ -322,7 +303,6 @@ export class GameRenderer {
     this.controlCamera.aspect = this.camera.aspect;
     this.controlCamera.fov = this.camera.fov;
     this.controlCamera.updateProjectionMatrix();
-    this.updateAimCursorOffset(this.viewPlayer);
     this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
@@ -561,7 +541,12 @@ class BallShadow {
 class PaddleVisual {
   readonly group = new THREE.Group();
   private readonly tilt = new THREE.Group();
-  private readonly faces: THREE.Mesh<THREE.CircleGeometry, THREE.MeshStandardMaterial>[];
+  /**
+   * Carries the grip. Pivoted at the blade's centre so the blade stays exactly where the contact test
+   * expects it while the racket visibly leans: the blade is a disc, so the angle between it and the
+   * grip is the only thing an eye can read as leaning.
+   */
+  private readonly grip = new THREE.Group();
   private readonly rim: THREE.Mesh<THREE.TorusGeometry, THREE.MeshStandardMaterial>;
   private readonly handle: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
 
@@ -573,7 +558,6 @@ class PaddleVisual {
     red.position.z = -0.003;
     const black = new THREE.Mesh(faceGeometry, new THREE.MeshStandardMaterial({ color: RUBBER_BLACK, roughness: 0.8 }));
     black.position.z = 0.003;
-    this.faces = [red, black];
 
     this.rim = new THREE.Mesh(
       new THREE.TorusGeometry(PADDLE_VISUAL_RADIUS, 0.005, 8, 64),
@@ -583,24 +567,16 @@ class PaddleVisual {
       new THREE.BoxGeometry(0.026, 0.1, 0.02),
       new THREE.MeshStandardMaterial({ color: HANDLE_WOOD, roughness: 0.7 }),
     );
-    this.handle.position.y = -PADDLE_VISUAL_RADIUS - 0.05;
-    this.tilt.add(red, black, this.rim, this.handle);
+    // The grip hangs straight down from the middle of the blade, its top overlapping behind the blade
+    // so the join stays covered as it swings.
+    this.handle.position.y = -PADDLE_VISUAL_RADIUS - 0.03;
+    this.grip.add(this.handle);
+    this.tilt.add(red, black, this.rim, this.grip);
     this.group.add(this.tilt);
   }
 
-  /**
-   * The viewer's own paddle is close to the camera: make it see-through so it never hides the ball,
-   * keeping the rim solid so its position stays obvious. A ball still behind the paddle shows dimmed
-   * through the rubber; once it has passed in front it is drawn at full brightness.
-   */
+  /** Both rackets are solid rubber; only the rim's glow marks which one is yours. */
   setLocalView(isLocal: boolean): void {
-    for (const face of this.faces) {
-      face.material.transparent = isLocal;
-      face.material.opacity = isLocal ? 0.55 : 1;
-      face.material.depthWrite = !isLocal;
-    }
-    this.handle.material.transparent = isLocal;
-    this.handle.material.opacity = isLocal ? 0.4 : 1;
     this.rim.material.emissiveIntensity = isLocal ? 1.1 : 1.3;
     this.rim.material.emissive.copy(this.color);
   }
@@ -608,17 +584,25 @@ class PaddleVisual {
   update(frame: PaddleFrame, player: PlayerIndex, dt: number): void {
     this.group.position.set(frame.pos.x, frame.pos.y, frame.pos.z);
     this.group.rotation.y = player === 0 ? 0 : Math.PI;
-    const localX = player === 0 ? frame.pos.x : -frame.pos.x;
     const k = 1 - Math.exp(-dt * 14);
     // Same face angle the physics uses: turned towards the table centre, open when low, closed when high.
-    // On top of that the face visibly closes on upward swings, and the handle points back to the body
-    // (forehand on the right of the body, backhand on the left).
+    // On top of that the face visibly closes on upward swings.
     const yaw = -frame.face.yaw;
     const pitch = clamp(frame.face.pitch - frame.swing.y * 0.04, -0.8, 0.8);
-    const roll = -clamp((localX - frame.bodyX) * 1.4, -1.1, 1.1);
     this.tilt.rotation.y += (yaw - this.tilt.rotation.y) * k;
     this.tilt.rotation.x += (pitch - this.tilt.rotation.x) * k;
-    this.tilt.rotation.z += (roll - this.tilt.rotation.z) * k;
+    // The racket leans over as you carry it out to the side — upright in the middle of the table,
+    // laid further over the wider you reach — and leans into a drag on top of that.
+    const localX = player === 0 ? frame.pos.x : -frame.pos.x;
+    const drag = player === 0 ? frame.swing.x : -frame.swing.x;
+    const outToTheSide = clamp(localX / AIM_X_LIMIT, -1, 1) * GRIP_LEAN_OUT_WIDE;
+    const lean = clamp(outToTheSide + drag * BLADE_LEAN_PER_SPEED, -GRIP_LEAN_LIMIT, GRIP_LEAN_LIMIT);
+    this.grip.rotation.z += (lean - this.grip.rotation.z) * k;
+    // Reaching in low over the table would drive the grip through the surface, so it swings back
+    // towards the player by exactly as much as it needs to, and hangs straight the rest of the time.
+    const overTable = Math.abs(frame.pos.x) <= HALF_WIDTH && Math.abs(frame.pos.z) <= HALF_LENGTH;
+    const clearance = overTable ? -Math.acos(clamp((frame.pos.y - 0.01) / GRIP_LENGTH, 0, 1)) : 0;
+    this.grip.rotation.x += (clearance - this.grip.rotation.x) * k;
   }
 }
 

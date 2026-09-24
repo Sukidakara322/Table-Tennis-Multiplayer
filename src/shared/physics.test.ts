@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ARM_ARC_DEPTH,
   BALL_RADIUS,
   DT,
   HALF_LENGTH,
+  hoverAt,
   NET_HEIGHT,
-  PADDLE_READY_HEIGHT,
+  PADDLE_HIT_RADIUS,
+  PADDLE_HOVER_Y,
+  STROKE_SWEEP,
   REACH_FAR_Z,
-  REACH_NEAR_Z,
+  REACH_IN_Z,
   SERVE_BALL_HEIGHT,
   SERVE_BALL_Z,
 } from './constants';
@@ -15,8 +17,8 @@ import { toLocalBall } from './frames';
 import { computeReturn } from './hit';
 import { stepBall, type BallState, type PhysicsEvent } from './physics';
 import { predictMeetPoint } from './predict';
-import { paddleFace, reachNearZ } from './racket';
-import { closestApproach } from './vec';
+import { paddleFace, type PaddleFace } from './racket';
+import { closestApproach, type Vec2, type Vec3 } from './vec';
 
 function ball(pos: [number, number, number], vel: [number, number, number], spin: [number, number, number] = [0, 0, 0]): BallState {
   return {
@@ -37,6 +39,11 @@ function simulate(b: BallState, seconds: number, stop?: (events: PhysicsEvent[])
     if (stop?.(all)) break;
   }
   return all;
+}
+
+/** The racket face for a ball met at this spot: the blade rides its ramp, not the ball's height. */
+function racketFace(at: Vec3, swing: Vec2): PaddleFace {
+  return paddleFace({ x: at.x, y: hoverAt(at.z), z: at.z }, swing);
 }
 
 const tableBounces = (events: PhysicsEvent[]) => events.filter((e) => e.type === 'table');
@@ -124,24 +131,20 @@ describe('contact sweep', () => {
 });
 
 describe('racket posture', () => {
-  it('bends the reach back along the arm arc away from the body', () => {
-    expect(reachNearZ(0, PADDLE_READY_HEIGHT, 0)).toBeCloseTo(REACH_NEAR_Z, 6);
-    expect(reachNearZ(1.2, PADDLE_READY_HEIGHT, 0)).toBeCloseTo(REACH_NEAR_Z + ARM_ARC_DEPTH, 6);
-    expect(reachNearZ(1.2, PADDLE_READY_HEIGHT, 1.2)).toBeCloseTo(REACH_NEAR_Z, 6);
-    expect(reachNearZ(0, 0.55, 0)).toBeGreaterThan(REACH_NEAR_Z);
-  });
-
-  it('turns the face towards the centre and opens it on low balls', () => {
+  it('turns the face towards the centre, and opens it where the blade rides low', () => {
     const still = { x: 0, y: 0 };
-    expect(paddleFace({ x: 0.8, y: 0.3, z: 1.5 }, still).yaw).toBeLessThan(0);
-    expect(paddleFace({ x: -0.8, y: 0.3, z: 1.5 }, still).yaw).toBeGreaterThan(0);
-    expect(paddleFace({ x: 0, y: 0.02, z: 1.5 }, still).pitch).toBeGreaterThan(0);
-    expect(paddleFace({ x: 0, y: 0.55, z: 1.5 }, still).pitch).toBeLessThan(0);
+    const onRamp = (z: number) => ({ x: 0, y: hoverAt(z), z });
+    expect(paddleFace({ x: 0.8, y: PADDLE_HOVER_Y, z: 1.5 }, still).yaw).toBeLessThan(0);
+    expect(paddleFace({ x: -0.8, y: PADDLE_HOVER_Y, z: 1.5 }, still).yaw).toBeGreaterThan(0);
+    // Stepping in over the table drops the blade, which opens the face to lift the ball; standing
+    // right back raises it, which closes the face to drive down.
+    expect(paddleFace(onRamp(REACH_IN_Z), still).pitch).toBeGreaterThan(0);
+    expect(paddleFace(onRamp(REACH_FAR_Z), still).pitch).toBeLessThan(0);
   });
 
   function landingX(contactPos: [number, number, number], vel: [number, number, number], swing: { x: number; y: number }, isServe: boolean) {
     const contact = ball(contactPos, vel);
-    const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: paddleFace(contact.pos, swing), isServe });
+    const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: racketFace(contact.pos, swing), isServe });
     const wanted = isServe ? 2 : 1;
     const events = simulate(out, 3, (e) => tableBounces(e).length >= wanted || e.some((x) => x.type === 'floor' || x.type === 'net'));
     const landing = tableBounces(events)[wanted - 1];
@@ -181,7 +184,7 @@ describe('racket posture', () => {
   it('bends a sidespin shot visibly in flight and still lands on the table', () => {
     const contact = ball([0, 0.3, 1.6], [0, 0.4, 6]);
     const swing = { x: 3, y: 1 };
-    const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: paddleFace(contact.pos, swing), isServe: false });
+    const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: racketFace(contact.pos, swing), isServe: false });
     const start = { ...out.pos };
     const path: Array<{ x: number; z: number }> = [];
     const events = simulate(out, 2, (e) => {
@@ -213,7 +216,7 @@ describe('racket posture', () => {
   it('sends a return from the forehand side back towards the middle', () => {
     const contact = ball([0.8, 0.3, 1.6], [0, 0.4, 6]);
     const swing = { x: 0, y: 1 };
-    const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: paddleFace(contact.pos, swing), isServe: false });
+    const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: racketFace(contact.pos, swing), isServe: false });
     const events = simulate(out, 2, (e) => tableBounces(e).length > 0 || e.some((x) => x.type === 'floor'));
     const landing = tableBounces(events)[0];
     expect(landing?.side).toBe(1);
@@ -226,7 +229,7 @@ describe('racket returns', () => {
 
   it('a flat swing lands on the opponent half', () => {
     const swing = { x: 0, y: 1 };
-    const out = computeReturn({ contact: incoming, swing, offset: { x: 0, y: 0 }, face: paddleFace(incoming.pos, swing), isServe: false });
+    const out = computeReturn({ contact: incoming, swing, offset: { x: 0, y: 0 }, face: racketFace(incoming.pos, swing), isServe: false });
     const events = simulate(out, 2, (e) => tableBounces(e).length > 0 || e.some((x) => x.type === 'floor'));
     const first = tableBounces(events)[0];
     expect(first?.side).toBe(1);
@@ -253,7 +256,7 @@ describe('racket returns', () => {
     for (const [height, fallSpeed] of contacts) {
       for (const swing of swings) {
         const contact = ball([0, height, SERVE_BALL_Z], [0, fallSpeed, 0]);
-        const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: paddleFace(contact.pos, swing), isServe: true });
+        const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: racketFace(contact.pos, swing), isServe: true });
         const events = simulate(out, 3, (e) => tableBounces(e).length >= 2 || e.some((x) => x.type === 'floor' || x.type === 'net'));
         const sides = tableBounces(events).map((e) => `${e.side}@${e.pos.z.toFixed(2)}`);
         const net = events.some((e) => e.type === 'net');
@@ -268,11 +271,14 @@ describe('racket returns', () => {
 
   it('predicts where the receiver meets the ball', () => {
     const swing = { x: 0, y: 2 };
-    const out = computeReturn({ contact: incoming, swing, offset: { x: 0, y: 0 }, face: paddleFace(incoming.pos, swing), isServe: false });
+    const out = computeReturn({ contact: incoming, swing, offset: { x: 0, y: 0 }, face: racketFace(incoming.pos, swing), isServe: false });
     const meet = predictMeetPoint(toLocalBall(1, out));
     expect(meet).not.toBeNull();
-    expect(meet!.pos.z).toBeGreaterThanOrEqual(REACH_NEAR_Z);
+    expect(meet!.pos.z).toBeGreaterThanOrEqual(REACH_IN_Z);
     expect(meet!.pos.z).toBeLessThanOrEqual(REACH_FAR_Z);
+    // It must be a point a racket could actually reach: within a stroke's sweep of the blade where it
+    // would be standing.
+    expect(Math.abs(meet!.pos.y - hoverAt(meet!.pos.z))).toBeLessThan(PADDLE_HIT_RADIUS + STROKE_SWEEP);
 
     // Re-predicting just after the bounce on the receiver's half must give the same meeting point.
     const local = toLocalBall(1, out);
@@ -294,7 +300,7 @@ describe('racket returns', () => {
       ['sidespin sweep', ball([0, 0.3, 1.6], [0, 0.5, 6], [0, 0, 0]), { x: 5, y: 1 }],
     ];
     for (const [name, contact, swing] of cases) {
-      const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: paddleFace(contact.pos, swing), isServe: false });
+      const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: racketFace(contact.pos, swing), isServe: false });
       const events = simulate(out, 2, (e) => tableBounces(e).length > 0 || e.some((x) => x.type === 'floor'));
       const first = events.find((e) => e.type !== 'net');
       const net = events.some((e) => e.type === 'net');

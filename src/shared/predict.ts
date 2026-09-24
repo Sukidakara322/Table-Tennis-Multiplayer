@@ -1,6 +1,5 @@
-import { DT, REACH_FAR_Z, REACH_IN_Z } from './constants';
+import { DT, hoverAt, PADDLE_HIT_RADIUS, REACH_FAR_Z, REACH_IN_Z, REACH_NEAR_Z, STROKE_SWEEP } from './constants';
 import { cloneBall, stepBall, type BallState, type PhysicsEvent } from './physics';
-import { reachNearZ } from './racket';
 import { copyVec3, type Vec3 } from './vec';
 
 export interface MeetPoint {
@@ -11,38 +10,21 @@ export interface MeetPoint {
 }
 
 const MAX_PREDICT_STEPS = Math.round(3 / DT);
-/** Aim to meet the ball this far into the reach, leaving a margin on both sides. */
-const MEET_INTO_REACH = 0.15;
+/** Aim for the middle of the blade, not its very edge. */
+const MEET_MARGIN = 0.03;
 
 /**
- * Where a receiver can meet an incoming ball (receiver's local frame): a point inside their reach
- * (which bends back along the arm arc away from `bodyX`), before the ball bounces a second time on
- * their half or leaves play. Returns null if it never gets there.
+ * Where a receiver could meet an incoming ball (receiver's local frame): a point along its path that
+ * is inside their reach and passing through the blade's height band, after it has bounced on their
+ * half and before it bounces again or leaves play. Returns null if no such point exists — which is a
+ * real answer, meaning that ball cannot be returned from where it is going.
  * Pass `alreadyBounced` when the ball has already bounced on the receiver's half.
  */
-export function predictMeetPoint(ball: BallState, alreadyBounced = false, bodyX = 0): MeetPoint | null {
-  const atTheEndLine = scan(ball, alreadyBounced, (x, y) => reachNearZ(x, y, bodyX), false);
-  if (atTheEndLine) return atTheEndLine;
-  // The ball dies before the end line: it can still be leaned in on over the table, but only once it
-  // has bounced (the same rule the paddle follows), and as late as possible so the lean stays short.
-  return scan(ball, alreadyBounced, () => REACH_IN_Z, true);
-}
-
-/**
- * Walks the ball forward looking for a point inside a reach whose near edge is `nearOf`. Stops at the
- * ball's second bounce on this half. `leaning` means the point must be after the bounce, and takes the
- * latest one found rather than the first.
- */
-function scan(
-  ball: BallState,
-  alreadyBounced: boolean,
-  nearOf: (x: number, y: number) => number,
-  leaning: boolean,
-): MeetPoint | null {
+export function predictMeetPoint(ball: BallState, alreadyBounced = false): MeetPoint | null {
   const sim = cloneBall(ball);
   const events: PhysicsEvent[] = [];
   let bounces = alreadyBounced ? 1 : 0;
-  let lastInReach: MeetPoint | null = null;
+  let best: MeetPoint | null = null;
 
   for (let i = 1; i <= MAX_PREDICT_STEPS; i++) {
     events.length = 0;
@@ -52,13 +34,17 @@ function scan(
       if (event.type === 'floor' || event.type === 'side') bounces = 2;
     }
     if (bounces >= 2 || sim.pos.z > REACH_FAR_Z) break;
-    if (leaning && bounces < 1) continue;
-    const near = nearOf(sim.pos.x, sim.pos.y);
-    if (sim.pos.z < near) continue;
+    if (sim.pos.z < REACH_IN_Z) continue;
+    // Only where the racket could actually meet it: the blade hovers at a fixed height, so the ball
+    // has to be passing through that band, and never before it has bounced (that would be a volley).
+    if (bounces < 1) continue;
+    // Anywhere a stroke could reach: the blade at that spot, plus the height its sweep covers.
+    if (Math.abs(sim.pos.y - hoverAt(sim.pos.z)) > PADDLE_HIT_RADIUS + STROKE_SWEEP - MEET_MARGIN) continue;
 
     const point = { pos: copyVec3(sim.pos), time: i * DT };
-    if (!leaning && sim.pos.z >= near + MEET_INTO_REACH) return point;
-    lastInReach = point;
+    // Prefer meeting it comfortably back rather than snatching at it over the table.
+    if (sim.pos.z >= REACH_NEAR_Z) return point;
+    best ??= point;
   }
-  return lastInReach;
+  return best;
 }

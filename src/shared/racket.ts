@@ -1,20 +1,9 @@
-import { ARM_ARC_DEPTH, ARM_REACH_X, ARM_REACH_Y, PADDLE_READY_HEIGHT, REACH_NEAR_Z } from './constants';
 import { clamp, type Vec2, type Vec3 } from './vec';
 
 /**
  * Racket posture rules shared by physics, rendering and the bot, in the owner's local frame
  * (own end at +z, playing towards -z).
  */
-
-/**
- * Closest depth the paddle can reach at a given x/height: the start of the reach, bent back along an
- * arm arc when the paddle is wide of the body or far from a comfortable height.
- */
-export function reachNearZ(x: number, y: number, bodyX: number): number {
-  const dx = (x - bodyX) / ARM_REACH_X;
-  const dy = (y - PADDLE_READY_HEIGHT) / ARM_REACH_Y;
-  return REACH_NEAR_Z + ARM_ARC_DEPTH * Math.min(1, dx * dx + dy * dy);
-}
 
 export interface PaddleFace {
   /** Radians; positive turns the face towards +x (aims right). */
@@ -25,13 +14,20 @@ export interface PaddleFace {
 
 /**
  * Aim: the face turns so the ball goes where the sideways swipe points. With no swipe it plays mostly
- * straight ahead, pulled only slightly towards the middle. Expressed as a sideways shift over a typical
- * shot length: a 3 m/s swipe moves the landing point ~0.9 m, enough to go corner to corner.
+ * straight ahead, pulled only slightly towards the middle — pulled hard and a ball struck out wide
+ * would cross to the far corner on its own, with the player having asked for nothing. Expressed as a
+ * sideways shift over a typical shot length: a 3 m/s swipe moves the landing point ~0.9 m, enough to
+ * go corner to corner. (How the racket is *carried* out wide is a separate, visual matter: see
+ * GRIP_LEAN_OUT_WIDE in the renderer.)
  */
 const AIM_SHIFT_PER_SWIPE = 0.45;
 const CENTRE_PULL = 0.5;
 const AIM_REFERENCE_LENGTH = 2.7;
-/** Face opens on low balls and closes on high ones, around this height. */
+/**
+ * How high the blade is riding sets the face angle, as it does in a real stroke: down by the net the
+ * racket is open, to lift a low ball over; up at the back of the ramp it is closed, to drive a high one
+ * down. Since the blade's height comes from where you stand, this is the same slope read as an angle.
+ */
 const NEUTRAL_HEIGHT = 0.25;
 const PITCH_PER_METRE = 1.0;
 

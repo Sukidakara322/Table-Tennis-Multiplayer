@@ -38,10 +38,10 @@ export const DRAG_K = 0.11;
  * Magnus effect: a = MAGNUS_K * (spin × v). Generous on purpose: with the slower ball it gives topspin a
  * clear dip, backspin a floating "parachute" and sidespin a bend you can see and play with.
  */
-export const MAGNUS_K = 0.006;
+export const MAGNUS_K = 0.0035;
 /** Per-step spin decay, roughly 10% per second. */
 export const SPIN_DAMPING = 0.99958;
-export const MAX_SPIN = 600;
+export const MAX_SPIN = 400;
 
 // Contacts
 export const TABLE_RESTITUTION = 0.9;
@@ -58,19 +58,46 @@ export const PADDLE_VISUAL_RADIUS = 0.078;
 /** What you see is what you hit: the ball's centre must pass within the drawn blade plus the ball's radius. */
 export const PADDLE_HIT_RADIUS = PADDLE_VISUAL_RADIUS + BALL_RADIUS;
 /**
- * Depth is not steered: the paddle travels with the incoming ball within this reach, so paddle and ball
- * are always at the same depth and what overlaps on screen is exactly what touches. The reach starts at
- * the end line (no accidental volleys) and ends where the camera can still show low paddle positions.
+ * Depth is steered by the player: the mouse moves the racket around the table, sideways and towards or
+ * away from the net. Nothing follows the ball on its own, so a ball is only met where the player puts
+ * the racket, and the stroke is that same forward or backward motion.
  */
 export const REACH_NEAR_Z = HALF_LENGTH + 0.03;
 export const REACH_FAR_Z = HALF_LENGTH + 0.6;
-/**
- * How far over the table you can follow a ball that has already bounced on your half, so a short ball
- * dying before the end line can still be played. Only after the bounce, so reaching in can never become
- * a volley, and only as fast as REACH_IN_SPEED: leaning in over the table costs time, it is not free.
- */
+/** Furthest in over the table the racket can be pushed, for a short ball dying near the net. */
 export const REACH_IN_Z = REACH_NEAR_Z - 0.95;
-export const REACH_IN_SPEED = 3.5;
+/**
+ * The racket does not slide around at one height: it runs up a ramp. Down by the net it skims the
+ * table, and it rises as it is drawn back behind the end line, the way a bat sits higher when you
+ * stand off the table and comes down as you step in. That slope is what gives height its meaning —
+ * a ball still climbing is met back where the blade is high, a short low one by stepping in.
+ */
+export const PADDLE_HOVER_Y = 0.17;
+export const PADDLE_LOW_Y = 0.09;
+export const PADDLE_HIGH_Y = 0.42;
+/**
+ * Kept gentle on purpose. The stroke itself runs along this slope, so every centimetre of it also
+ * moves the blade up or down: too steep and driving through the ball slides the bat out from under it,
+ * turning a well-placed stroke into a miss over a few hundredths of a second.
+ */
+export const PADDLE_RAMP_SLOPE = 0.25;
+
+/** Height of the blade's centre when the racket stands at `z`, before any stroke lifts it. */
+export function hoverAt(z: number): number {
+  const ramped = PADDLE_HOVER_Y + (z - REACH_NEAR_Z) * PADDLE_RAMP_SLOPE;
+  return ramped < PADDLE_LOW_Y ? PADDLE_LOW_Y : ramped > PADDLE_HIGH_Y ? PADDLE_HIGH_Y : ramped;
+}
+
+/**
+ * How far a stroke reaches above and below the blade itself. A real stroke is not a flat slide: the
+ * racket rises through the ball, so it covers a band of heights rather than one. That band is what
+ * makes height playable at all — where a ball has got to by the time it reaches you depends on where
+ * it bounced, and varies by far more than the blade is wide, so a racket that only struck at its own
+ * exact height would be beaten by half the balls that came at it however well it was placed. Where
+ * you stand along the table and how you meet the ball are yours to judge, and both are plain to see;
+ * a few centimetres of height in a shallow view are neither, so the stroke covers them.
+ */
+export const STROKE_SWEEP = 0.14;
 
 /**
  * The viewer's eye, in the viewer's local frame. Shared so the mouse mapping matches what is drawn.
@@ -81,33 +108,20 @@ export const REACH_IN_SPEED = 3.5;
 export const VIEW_EYE_Y = 1.25;
 export const VIEW_EYE_Z = HALF_LENGTH + 1.6;
 /**
- * The mouse aims the paddle on this plane (the start of the reach). The cursor is projected onto it
- * through the camera, so the paddle moves pixel for pixel with the mouse; the limits below are just
- * how far it can go. At any other depth the paddle stays on the same line of sight from the eye, so it
- * never slides on screen while it travels with the ball.
+ * The mouse moves the racket on the table: the cursor is projected onto the blade's hovering plane
+ * through the camera, so pointing at a spot on the table puts the racket there. `aim.x` is sideways and
+ * `aim.y` is how far forward of the back of the reach it stands, so pushing the mouse away drives the
+ * racket towards the net and pulling it back draws the racket away — which is also the stroke.
  */
-export const AIM_PLANE_Z = REACH_NEAR_Z;
 /** Sideways reach: the table's half width plus a step outside it, and all of it fits on screen. */
 export const AIM_X_LIMIT = 0.85;
-/** Height range: low enough to dig out a low ball, capped so swings stay controlled. */
-export const AIM_Y_MIN = -0.3;
-export const AIM_Y_MAX = 0.55;
+/** Forward reach, from standing right back to leaning in over the table. */
+export const AIM_FORWARD_MIN = 0;
+export const AIM_FORWARD_MAX = REACH_FAR_Z - REACH_IN_Z;
+/** Where the racket rests along the table when the mouse is centred. */
+export const PADDLE_READY_FORWARD = REACH_FAR_Z - REACH_NEAR_Z;
 /** Hard world bounds for the paddle wherever it is. */
 export const PADDLE_X_LIMIT = 0.95;
-export const PADDLE_Y_MIN = -0.35;
-export const PADDLE_Y_MAX = 0.6;
-/** Speed at which the paddle glides back to the start of its reach when not riding with the ball. */
-export const PADDLE_DEPTH_RETURN_SPEED = 6;
-export const PADDLE_READY_HEIGHT = 0.3;
-/**
- * Arm arc: reaching wide or very high/low pulls the paddle back towards the body by up to this much,
- * so the paddle moves on a curved surface around the player rather than a flat plane. Kept small: it
- * shifts where the reach starts, and a big shift used to pull the paddle off a ball mid-stroke.
- */
-export const ARM_ARC_DEPTH = 0.08;
-/** Comfortable reach from the body centre before the arc is fully bent (sideways, vertically). */
-export const ARM_REACH_X = 0.8;
-export const ARM_REACH_Y = 0.45;
 /** The body shuffles after the paddle: it covers ~63% of the gap in this many seconds. */
 export const BODY_FOLLOW_TIME = 0.4;
 /** A player can't touch the ball again this soon after their own stroke. */
@@ -115,10 +129,13 @@ export const HIT_COOLDOWN = 0.3;
 
 // Serve
 /**
- * The ball waits here until it is struck: behind the end line, at a fixed height, and following the
- * server sideways so they choose where to serve from. Moving the paddle up or down through it serves.
+ * The ball waits here until it is struck: in front of the server at blade height, following them
+ * sideways so they choose where to serve from. Driving the racket forward through it serves with
+ * topspin, dragging the racket back through it cuts under the ball for backspin.
  */
 export const SERVE_BALL_Z = HALF_LENGTH + 0.15;
-export const SERVE_BALL_HEIGHT = 0.3;
-/** How fast the paddle must be moving up or down to strike the waiting ball. */
+export const SERVE_BALL_HEIGHT = PADDLE_HOVER_Y + 0.06;
+/** How fast the racket must be travelling along the table to strike the waiting ball. */
 export const SERVE_MIN_FLICK = 1.2;
+/** How far from the waiting ball the racket can be and still strike it: it is held against the bat. */
+export const SERVE_REACH = 0.45;

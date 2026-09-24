@@ -1,10 +1,17 @@
-import { PADDLE_READY_HEIGHT } from '../../shared/constants';
+import {
+  AIM_FORWARD_MAX,
+  AIM_FORWARD_MIN,
+  AIM_X_LIMIT,
+  hoverAt,
+  PADDLE_READY_FORWARD,
+  REACH_FAR_Z,
+} from '../../shared/constants';
 import { HIT_TUNING, spinKick } from '../../shared/hit';
 import type { BallState } from '../../shared/physics';
 import { paddleFace } from '../../shared/racket';
 import { createRng } from '../../shared/rng';
 import { approach, clamp, type Vec2, type Vec3 } from '../../shared/vec';
-import type { ControllerContext, Paddle, PaddleController } from './paddle';
+import { forwardToZ, type ControllerContext, type Paddle, type PaddleController } from './paddle';
 
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
 
@@ -27,16 +34,27 @@ const PROFILES: Record<BotDifficulty, BotProfile> = {
   hard: { maxSpeed: 5, reaction: 0.12, aimError: 0.016, spinRead: 1, aggression: 1 },
 };
 
-/** Where the bot waits (x, height), in its local frame. */
-const READY: Vec2 = { x: 0, y: PADDLE_READY_HEIGHT };
-/** How far above or below the waiting ball the bot sets up before sweeping through it to serve. */
+/** Where the bot waits: middle of the table, at its resting distance from the net. */
+const READY: Vec2 = { x: 0, y: PADDLE_READY_FORWARD };
+/** How far short of the ball the bot sets up before driving through it to serve. */
 const SERVE_WIND_UP = 0.22;
-/** Paddle speed while sweeping through a serve. */
+/** Racket speed while driving through a serve. */
 const SERVE_SWING_SPEED = 3.5;
+/**
+ * How far back of the meeting point the bot waits, so it drives forward through the ball. Short: the
+ * racket runs along a slope, so a long drive would also carry the blade well below where the ball is.
+ */
+const STROKE_WIND_UP = 0.15;
+/**
+ * Start the drive this much earlier than the arithmetic says: a stroke that is late can miss the ball
+ * entirely, while one that is early simply meets it a touch sooner.
+ */
+const STROKE_EARLY_BIAS = 0.05;
 
 /**
- * Plays under the same rules as a human: it steers only left/right and height, its paddle travels in
- * depth with the ball the same way, and contact only happens when paddle and ball actually overlap.
+ * Plays under exactly the same rules as a player: it steers the racket around its own half, sideways
+ * and along the table, nothing follows the ball for it, and it only plays a shot by driving through
+ * the ball where it actually is.
  */
 export class BotController implements PaddleController {
   private readonly profile: BotProfile;
@@ -79,23 +97,25 @@ export class BotController implements PaddleController {
         this.serveDirection = Math.sign(this.plannedSwing.y) || 1;
         this.serveReady = true;
       }
-      const windUpY = ball.pos.y - this.serveDirection * SERVE_WIND_UP;
+      // Set up short of the waiting ball along the table, then drive through it.
+      const ballForward = REACH_FAR_Z - ball.pos.z;
+      const windUpY = ballForward - this.serveDirection * SERVE_WIND_UP;
       this.serveDelay -= ctx.dt;
       // The sweep has to latch: leaving the wind-up spot is what a swing is, so re-checking "am I set
       // up?" mid-stroke would pull the paddle straight back and it would only ever shiver in place.
       if (!this.serveSwinging) {
-        const setUp = Math.abs(paddle.pos.y - windUpY) < 0.02 && Math.abs(paddle.pos.x - this.serveX) < 0.02;
+        const setUp = Math.abs(paddle.aim.y - windUpY) < 0.02 && Math.abs(paddle.aim.x - this.serveX) < 0.02;
         this.serveSwinging = this.serveDelay <= 0 && setUp;
       }
       if (!this.serveSwinging) {
         this.target = { x: this.serveX, y: windUpY };
       } else {
-        this.target = { x: this.serveX, y: ball.pos.y + this.serveDirection * SERVE_WIND_UP };
+        this.target = { x: this.serveX, y: ballForward + this.serveDirection * SERVE_WIND_UP };
         speed = SERVE_SWING_SPEED;
         paddle.swing = { ...this.plannedSwing };
-        // If the sweep somehow finished without touching the ball, wind up and try again rather than
-        // hanging above it with the ball still waiting.
-        if (Math.abs(paddle.pos.y - this.target.y) < 0.01) {
+        // If the drive somehow finished without touching the ball, wind up and try again rather than
+        // standing past it with the ball still waiting.
+        if (Math.abs(paddle.aim.y - this.target.y) < 0.01) {
           this.serveSwinging = false;
           this.serveReady = false;
           this.serveDelay = 0.4;
@@ -111,19 +131,38 @@ export class BotController implements PaddleController {
       if (this.reaction > 0) {
         this.reaction -= ctx.dt;
       } else {
-        this.target = { x: ctx.meetPoint.pos.x + this.error.x, y: ctx.meetPoint.pos.y + this.error.y };
+        // Move across to where the ball will pass straight away, but hold station until it has
+        // bounced: standing up the table with the ball still in the air is how you volley it away.
+        const meetForward = REACH_FAR_Z - ctx.meetPoint.pos.z + this.error.y;
+        // Start the drive exactly early enough to be travelling through the meeting point as the ball
+        // reaches it, rather than a fixed moment that arrives late on a slow stroke and early on a fast one.
+        const driveSpeed = Math.max(this.profile.maxSpeed, Math.abs(this.plannedSwing.y));
+        const driving = ctx.incomingBounced && ctx.meetPoint.time <= STROKE_WIND_UP / driveSpeed + STROKE_EARLY_BIAS;
+        // Set up behind the ball while it is still in the air — there is no time to do it afterwards —
+        // but never past your own end line until it has bounced, which is the whole of the volley rule.
+        const waiting = Math.min(meetForward - STROKE_WIND_UP, READY.y);
+        this.target = {
+          x: ctx.meetPoint.pos.x + this.error.x,
+          y: driving ? meetForward + STROKE_WIND_UP : waiting,
+        };
+        // It is only stroking the ball while it is actually driving through it, the same as for a
+        // player: a racket held still is held still, and earns no help with the shot.
+        if (driving) {
+          speed = driveSpeed;
+          paddle.swing = { ...this.plannedSwing };
+        }
       }
-      paddle.swing = { ...this.plannedSwing };
     } else {
       this.target = { ...READY };
     }
 
     const step = speed * ctx.dt;
-    paddle.pos.x = approach(paddle.pos.x, this.target.x, step);
-    paddle.pos.y = approach(paddle.pos.y, this.target.y, step);
-    // The bot has no screen: it places the paddle directly, so its aim is simply where the paddle is.
-    paddle.aim.x = paddle.pos.x;
-    paddle.aim.y = paddle.pos.y;
+    // The bot has no screen: it steers the same two numbers a player does, sideways and along the table.
+    paddle.aim.x = approach(paddle.aim.x, clamp(this.target.x, -AIM_X_LIMIT, AIM_X_LIMIT), step);
+    paddle.aim.y = approach(paddle.aim.y, clamp(this.target.y, AIM_FORWARD_MIN, AIM_FORWARD_MAX), step);
+    paddle.pos.x = paddle.aim.x;
+    paddle.pos.z = forwardToZ(paddle.aim.y);
+    paddle.pos.y = hoverAt(paddle.pos.z);
   }
 
   /** Sidespin plus a vertical brush, like a human swinging through the toss. */

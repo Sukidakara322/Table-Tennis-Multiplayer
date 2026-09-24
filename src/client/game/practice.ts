@@ -4,25 +4,21 @@ import {
   HALF_LENGTH,
   HALF_WIDTH,
   HIT_COOLDOWN,
-  PADDLE_DEPTH_RETURN_SPEED,
-  PADDLE_HIT_RADIUS,
-  REACH_FAR_Z,
-  REACH_IN_SPEED,
-  REACH_IN_Z,
   BODY_FOLLOW_TIME,
-  SERVE_BALL_HEIGHT,
   SERVE_BALL_Z,
   SERVE_MIN_FLICK,
+  SERVE_REACH,
 } from '../../shared/constants';
 import { toLocalBall, toLocalVec, toWorldBall, toWorldVec } from '../../shared/frames';
+import { bladeContact } from '../../shared/contact';
 import { computeReturn } from '../../shared/hit';
 import { awardPoint, createMatch, currentServer, isMatchPoint, type GamesToWin, type MatchState } from '../../shared/match';
 import { stepBall, type BallState, type PhysicsEvent } from '../../shared/physics';
 import { predictMeetPoint, type MeetPoint } from '../../shared/predict';
-import { paddleFace, reachNearZ } from '../../shared/racket';
+import { paddleFace } from '../../shared/racket';
 import { applyRallyEvent, createRally, type RallyEvent, type RallyOutcome, type RallyState } from '../../shared/referee';
 import { otherPlayer, PLAYERS, type PlayerIndex } from '../../shared/types';
-import { approach, clamp, closestApproach, copyVec3, lerp, length3, vec3, type Vec2, type Vec3 } from '../../shared/vec';
+import { clamp, copyVec3, lerp, length3, vec3, type Vec2, type Vec3 } from '../../shared/vec';
 import { loadSettings, saveSettings } from '../settings';
 import { GameUi, REASON_TEXT } from '../ui/gameUi';
 import { BotController, type BotDifficulty } from './bot';
@@ -67,10 +63,10 @@ export class PracticeSession {
   private meetPoints: [MeetPoint | null, MeetPoint | null] = [null, null];
   private incomingIds: [number, number] = [0, 0];
   private lastStrokeTime: [number, number] = [-Infinity, -Infinity];
-  /** Each player's body centre x (local frame); the arm arc bends relative to it. */
+  /** Each player's body centre x (local frame); the grip points back towards it. */
   private bodyX: [number, number] = [0, 0];
-  /** Latched once an incoming ball is inside a player's reach, so the paddle keeps its depth. */
-  private travellingWithBall: [boolean, boolean] = [false, false];
+  /** Sim time the meeting points were worked out at, so their countdown stays honest. */
+  private meetPredictedAt = 0;
   private phaseTimer = 0;
   private simTime = 0;
   private lastActivity = 0;
@@ -99,7 +95,7 @@ export class PracticeSession {
     });
     this.input.sensitivity = settings.sensitivity;
 
-    this.human = new HumanController(this.input, this.renderer, HUMAN);
+    this.human = new HumanController(this.input);
     this.controllers = [this.human, new BotController(options.difficulty)];
 
     this.ui = new GameUi(this.root, this.names, settings, {
@@ -175,7 +171,7 @@ export class PracticeSession {
     this.prevBallPos = copyVec3(this.ball.pos);
     this.renderer.clearTrail();
     this.ui.setScore(this.match, server);
-    this.ui.setHint(server === HUMAN ? 'Move sideways to place your serve, then flick up or down through the ball' : null);
+    this.ui.setHint(server === HUMAN ? 'Move sideways to place your serve, then drive through the ball for topspin or drag back for backspin' : null);
 
     for (const player of PLAYERS) {
       if (isMatchPoint(this.match, player)) {
@@ -238,75 +234,36 @@ export class PracticeSession {
     for (const player of PLAYERS) {
       const paddle = this.paddles[player];
       const ball = toLocalBall(player, this.ball);
-      // The game sets depth; controllers (mouse or bot) steer left/right and height.
-      paddle.pos.z = this.paddleDepth(player, ball);
+      // Controllers (mouse or bot) place the racket on the table themselves; nothing here follows the ball.
       this.controllers[player].update(paddle, {
         phase: this.phase,
         isServer: this.rally.server === player,
         ball,
-        meetPoint: this.meetPoints[player],
+        meetPoint: this.countdownTo(player),
+        incomingBounced: this.rally.stage === 'awaitingReturn' && this.rally.lastHitter !== player,
         incomingId: this.incomingIds[player],
         wallTime,
         dt: DT,
       });
-      clampPaddle(paddle.pos);
-      // The body shuffles after the aim, so a quick reach to the side bends along the arm arc.
+      clampPaddle(paddle);
+      // The body shuffles after the racket, so the stance lags a quick move across the table.
       this.bodyX[player] += (paddle.aim.x - this.bodyX[player]) * (DT / BODY_FOLLOW_TIME);
     }
-  }
-
-  /**
-   * Same rule for every player: while a ball is coming at you and inside your reach, your paddle is at
-   * exactly the ball's depth, so overlapping on screen means touching. Otherwise it glides back to the
-   * start of the reach, which bends back along the arm arc when reaching wide, high or low.
-   * The server's paddle sits at the toss depth.
-   *
-   * The reach stops at your end line until the ball bounces on your half; after that you lean in after
-   * it, out to REACH_IN_Z. That is what makes a ball dying short of the end line playable, and because
-   * the lean only starts after the bounce it can never turn into a volley.
-   */
-  private paddleDepth(player: PlayerIndex, ball: BallState): number {
-    const paddle = this.paddles[player];
-    const glide = (target: number) => approach(paddle.pos.z, target, PADDLE_DEPTH_RETURN_SPEED * DT);
-    const isServer = this.rally.server === player;
-    if (this.phase === 'serve' && isServer) return glide(SERVE_BALL_Z);
-
-    const incoming = this.phase === 'rally' && this.rally.lastHitter !== null && this.rally.lastHitter !== player;
-    if (!incoming) {
-      this.travellingWithBall[player] = false;
-      return glide(reachNearZ(paddle.aim.x, paddle.aim.y, this.bodyX[player]));
-    }
-    // Once the ball is inside the reach it stays with the paddle until this ball is done. Without this
-    // latch, moving the mouse (which bends the reach along the arm arc) would drop the ball mid-stroke.
-    if (!this.travellingWithBall[player]) {
-      const near = reachNearZ(paddle.aim.x, paddle.aim.y, this.bodyX[player]);
-      if (ball.pos.z >= near) {
-        this.travellingWithBall[player] = true;
-      } else if (this.rally.stage !== 'awaitingReturn') {
-        return glide(near);
-      } else {
-        // Lean in at arm's speed instead of snapping onto the ball: a short ball has to be read early
-        // enough to get there, and while leaning the paddle is not yet at the ball's depth.
-        const target = Math.max(ball.pos.z, REACH_IN_Z);
-        const leaned = approach(paddle.pos.z, target, REACH_IN_SPEED * DT);
-        if (leaned > target) return leaned;
-        this.travellingWithBall[player] = true;
-      }
-    }
-    return clamp(ball.pos.z, REACH_IN_Z, REACH_FAR_Z);
   }
 
   // ─── Ball ────────────────────────────────────────────────────────────────
 
   /**
-   * The ball waits in front of the server at a fixed height, following them sideways: moving left and
-   * right chooses where the serve starts from, and moving the paddle up or down through it serves.
+   * The ball waits in front of the server at blade height, following them sideways: moving left and
+   * right chooses where the serve starts from, and driving the racket through it along the table serves.
    */
   private holdBallForServe(): void {
     const server = this.rally.server;
     const paddle = this.paddles[server];
+    // Held in front of the racket, so it rides at whatever height the blade is at. Otherwise a stroke
+    // that lifts the racket — which every forward drive does — would simply pass under the ball.
     const local: BallState = {
-      pos: { x: clamp(paddle.pos.x, -HALF_WIDTH, HALF_WIDTH), y: SERVE_BALL_HEIGHT, z: SERVE_BALL_Z },
+      pos: { x: clamp(paddle.pos.x, -HALF_WIDTH, HALF_WIDTH), y: paddle.pos.y, z: SERVE_BALL_Z },
       vel: vec3(),
       spin: vec3(),
     };
@@ -353,16 +310,28 @@ export class PracticeSession {
     if (this.phase !== 'rally' || this.rally.lastHitter === null) return;
     const receiver = otherPlayer(this.rally.lastHitter);
     const alreadyBounced = this.rally.stage === 'awaitingReturn';
-    this.meetPoints[receiver] = predictMeetPoint(toLocalBall(receiver, this.ball), alreadyBounced, this.bodyX[receiver]);
+    this.meetPoints[receiver] = predictMeetPoint(toLocalBall(receiver, this.ball), alreadyBounced);
+    this.meetPredictedAt = this.simTime;
+  }
+
+  /**
+   * The meeting point as it stands now. It is only worked out when the ball is struck or bounces, so
+   * its "seconds from now" has to be counted down since then — otherwise a bot waiting for the ball
+   * would never see the moment to play its stroke arrive.
+   */
+  private countdownTo(player: PlayerIndex): MeetPoint | null {
+    const meet = this.meetPoints[player];
+    if (!meet) return null;
+    return { pos: meet.pos, time: meet.time - (this.simTime - this.meetPredictedAt) };
   }
 
   // ─── Contacts ────────────────────────────────────────────────────────────
 
   /**
-   * Contact between the ball and a player's paddle, in that player's frame. The paddle travels at the
-   * ball's depth (see `paddleDepth`), so this is an overlap test: the ball's centre within the drawn
-   * blade plus the ball's radius. Both move in a straight line during the step, so their closest
-   * approach is solved exactly — neither a fast ball nor a fast swing can slip between samples.
+   * Contact between the ball and a player's racket, in that player's frame. The racket stands where the
+   * player put it, so this is a real crossing test: over the step, the ball must pass through the plane
+   * of the blade and be inside the blade's face when it does. Ball and racket both move in a straight
+   * line during the step, so the crossing is solved exactly rather than sampled.
    */
   private findContact(player: PlayerIndex): { contact: BallState; offset: Vec2; overTable: boolean } | null {
     if (this.simTime - this.lastStrokeTime[player] < HIT_COOLDOWN) return null;
@@ -370,24 +339,15 @@ export class PracticeSession {
     const ball = toLocalBall(player, this.ball);
     const prev = toLocalVec(player, this.prevBallPos);
 
-    // Gap between ball and paddle at the start and end of the step; it changes linearly in between.
-    const startX = prev.x - paddle.prevPos.x;
-    const startY = prev.y - paddle.prevPos.y;
-    const endX = ball.pos.x - paddle.pos.x;
-    const endY = ball.pos.y - paddle.pos.y;
-    const t = closestApproach({ x: startX, y: startY }, { x: endX, y: endY });
-    const ox = startX + (endX - startX) * t;
-    const oy = startY + (endY - startY) * t;
-    if (ox * ox + oy * oy > PADDLE_HIT_RADIUS * PADDLE_HIT_RADIUS) return null;
+    const hit = bladeContact(prev, ball.pos, paddle.prevPos, paddle.pos, paddleFace(paddle.pos, paddle.swing));
+    if (!hit) return null;
 
-    const bz = lerp(prev.z, ball.pos.z, t);
-    if (Math.abs(bz - lerp(paddle.prevPos.z, paddle.pos.z, t)) > PADDLE_HIT_RADIUS) return null;
-
-    const bx = lerp(prev.x, ball.pos.x, t);
-    const by = lerp(prev.y, ball.pos.y, t);
+    const bx = lerp(prev.x, ball.pos.x, hit.t);
+    const by = lerp(prev.y, ball.pos.y, hit.t);
+    const bz = lerp(prev.z, ball.pos.z, hit.t);
     return {
       contact: { pos: { x: bx, y: by, z: bz }, vel: ball.vel, spin: ball.spin },
-      offset: { x: ox, y: oy },
+      offset: hit.offset,
       overTable: Math.abs(bx) <= HALF_WIDTH && Math.abs(bz) <= HALF_LENGTH,
     };
   }
@@ -395,14 +355,18 @@ export class PracticeSession {
   private checkServeContact(): void {
     const server = this.rally.server;
     const paddle = this.paddles[server];
-    const hit = this.findContact(server);
     const swingSpeed = Math.hypot(paddle.swing.x, paddle.swing.y);
-    // Served by moving the paddle up or down through the waiting ball: up brushes topspin onto it,
-    // down brushes backspin. A sideways drift alone is not a serve.
-    if (!hit || Math.abs(paddle.swing.y) < SERVE_MIN_FLICK) return;
+    // The ball is in your own hand here, held against the racket, so the stroke is what strikes it
+    // rather than the racket having to catch it up: drive forward to brush topspin onto it, drag back
+    // to cut under it for backspin. Requiring the racket to run the ball down would make a backspin
+    // serve impossible, since dragging backwards only carries the racket away from a waiting ball.
+    const ball = toLocalBall(server, this.ball);
+    const nearBall = Math.abs(paddle.pos.z - ball.pos.z) < SERVE_REACH;
+    if (!nearBall || Math.abs(paddle.swing.y) < SERVE_MIN_FLICK) return;
 
     const face = paddleFace(paddle.pos, paddle.swing);
-    const out = computeReturn({ contact: hit.contact, swing: paddle.swing, offset: hit.offset, face, isServe: true });
+    const contact: BallState = { pos: copyVec3(ball.pos), vel: ball.vel, spin: ball.spin };
+    const out = computeReturn({ contact, swing: paddle.swing, offset: { x: 0, y: 0 }, face, isServe: true });
     this.ball = toWorldBall(server, out);
     this.phase = 'rally';
     this.referee({ type: 'serve', player: server });
