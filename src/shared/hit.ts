@@ -31,8 +31,10 @@ export const HIT_TUNING = {
    * racket slower than this and that help fades out, until a racket that is standing still does no
    * more than a real one would: the ball rebounds off the rubber wherever the angle sends it. Holding
    * the racket in the ball's path must never be worth a free, perfectly placed return.
+   * Set against the plane the racket is held on: about a fifth of its height crossed in a tenth of a
+   * second, so an ordinary stroke clears it and standing the racket in the way does not.
    */
-  rallyMinSwing: 1.5,
+  rallyMinSwing: 1.1,
   /** Pace a ball keeps when it rebounds off a racket that was not being swung. */
   blockRestitution: 0.8,
   /** How much pace a backwards cut carries, against the same speed driven forwards. */

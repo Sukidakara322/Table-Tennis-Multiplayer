@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AIM_Y_MAX,
+  AIM_Y_MIN,
   BALL_RADIUS,
   DT,
   HALF_LENGTH,
-  hoverAt,
   NET_HEIGHT,
   PADDLE_HIT_RADIUS,
   PADDLE_HOVER_Y,
   STROKE_SWEEP,
+  READY_STAND_Z,
   REACH_FAR_Z,
   REACH_IN_Z,
   SERVE_BALL_HEIGHT,
@@ -18,7 +20,7 @@ import { computeReturn } from './hit';
 import { stepBall, type BallState, type PhysicsEvent } from './physics';
 import { predictMeetPoint } from './predict';
 import { paddleFace, type PaddleFace } from './racket';
-import { closestApproach, type Vec2, type Vec3 } from './vec';
+import { clamp, closestApproach, type Vec2, type Vec3 } from './vec';
 
 function ball(pos: [number, number, number], vel: [number, number, number], spin: [number, number, number] = [0, 0, 0]): BallState {
   return {
@@ -41,9 +43,9 @@ function simulate(b: BallState, seconds: number, stop?: (events: PhysicsEvent[])
   return all;
 }
 
-/** The racket face for a ball met at this spot: the blade rides its ramp, not the ball's height. */
+/** The racket face for a ball met at this spot: held on its plane, at the height the ball is at. */
 function racketFace(at: Vec3, swing: Vec2): PaddleFace {
-  return paddleFace({ x: at.x, y: hoverAt(at.z), z: at.z }, swing);
+  return paddleFace({ x: at.x, y: clamp(at.y, AIM_Y_MIN, AIM_Y_MAX), z: at.z }, swing);
 }
 
 const tableBounces = (events: PhysicsEvent[]) => events.filter((e) => e.type === 'table');
@@ -131,15 +133,16 @@ describe('contact sweep', () => {
 });
 
 describe('racket posture', () => {
-  it('turns the face towards the centre, and opens it where the blade rides low', () => {
+  it('turns the face towards the centre, and opens it where the racket is held low', () => {
     const still = { x: 0, y: 0 };
-    const onRamp = (z: number) => ({ x: 0, y: hoverAt(z), z });
+    const held = (y: number) => ({ x: 0, y, z: READY_STAND_Z });
     expect(paddleFace({ x: 0.8, y: PADDLE_HOVER_Y, z: 1.5 }, still).yaw).toBeLessThan(0);
     expect(paddleFace({ x: -0.8, y: PADDLE_HOVER_Y, z: 1.5 }, still).yaw).toBeGreaterThan(0);
-    // Stepping in over the table drops the blade, which opens the face to lift the ball; standing
-    // right back raises it, which closes the face to drive down.
-    expect(paddleFace(onRamp(REACH_IN_Z), still).pitch).toBeGreaterThan(0);
-    expect(paddleFace(onRamp(REACH_FAR_Z), still).pitch).toBeLessThan(0);
+    // Holding the racket low opens the face to lift the ball over; holding it high closes the face
+    // to drive down. The middle of the plane, where every point starts, is square.
+    expect(paddleFace(held(AIM_Y_MIN), still).pitch).toBeGreaterThan(0);
+    expect(paddleFace(held(AIM_Y_MAX), still).pitch).toBeLessThan(0);
+    expect(paddleFace(held(PADDLE_HOVER_Y), still).pitch).toBeCloseTo(0, 6);
   });
 
   function landingX(contactPos: [number, number, number], vel: [number, number, number], swing: { x: number; y: number }, isServe: boolean) {
@@ -276,9 +279,11 @@ describe('racket returns', () => {
     expect(meet).not.toBeNull();
     expect(meet!.pos.z).toBeGreaterThanOrEqual(REACH_IN_Z);
     expect(meet!.pos.z).toBeLessThanOrEqual(REACH_FAR_Z);
-    // It must be a point a racket could actually reach: within a stroke's sweep of the blade where it
-    // would be standing.
-    expect(Math.abs(meet!.pos.y - hoverAt(meet!.pos.z))).toBeLessThan(PADDLE_HIT_RADIUS + STROKE_SWEEP);
+    // It must be a point a racket could actually reach: on the plane it is held on, or within a
+    // stroke's sweep of the nearest edge of it.
+    const reach = PADDLE_HIT_RADIUS + STROKE_SWEEP;
+    expect(meet!.pos.y).toBeGreaterThan(AIM_Y_MIN - reach);
+    expect(meet!.pos.y).toBeLessThan(AIM_Y_MAX + reach);
 
     // Re-predicting just after the bounce on the receiver's half must give the same meeting point.
     const local = toLocalBall(1, out);

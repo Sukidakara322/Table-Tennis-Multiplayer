@@ -10,12 +10,13 @@ export interface PracticeChoice {
 }
 
 export const CONTROLS_HELP: Array<[string, string]> = [
-  ['Mouse', 'Move the racket around your half: sideways, and towards or away from the net'],
-  ['Meeting the ball', 'Nothing follows it for you — put the racket where it will pass, at the right moment'],
-  ['Push forward', 'Drive through the ball: pace and topspin'],
-  ['Pull back', 'Cut under it: backspin'],
-  ['Sweep sideways', 'Sidespin and aim'],
-  ['Serving', 'Move sideways to place the ball, then drive through it or drag back for backspin'],
+  ['Mouse', 'Holds the racket in front of you — put the blade in the ball’s way'],
+  ['Low / high', 'Held low the face is open, to lift; held high it is closed, to drive down'],
+  ['Sweep up', 'Topspin: pace, and a dip that brings it in and kicks on'],
+  ['Sweep down', 'Backspin: floats over the net and dies on the bounce'],
+  ['Sweep sideways', 'Sidespin, which bends the ball across the table'],
+  ['Stand still', 'No stroke at all — a bare rebound off the rubber, wherever that sends it'],
+  ['Serving', 'Flick the mouse through the waiting ball: up for topspin, down for backspin'],
   ['Esc', 'Menu'],
 ];
 

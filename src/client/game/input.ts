@@ -22,8 +22,8 @@ const MAX_EVENT_MOVEMENT = 250;
 export class PointerInput {
   sensitivity = 1;
   locked = false;
-  /** Starts a little below centre, which puts the racket at its resting place by the end line. */
-  private samples: CursorSample[] = [{ t: performance.now(), x: 0, y: -0.25 }];
+  /** Starts centred, which is where the racket is held between points (see `resetPaddles`). */
+  private samples: CursorSample[] = [{ t: performance.now(), x: 0, y: 0 }];
 
   constructor(
     private readonly target: HTMLElement,
@@ -46,6 +46,15 @@ export class PointerInput {
 
   exitLock(): void {
     if (document.pointerLockElement === this.target) document.exitPointerLock();
+  }
+
+  /**
+   * Puts the cursor somewhere without the mouse having moved, and forgets where it had been. Used
+   * between points: the racket is set back to its ready place, and the mouse has to agree with it, or
+   * the next flick of the wrist would read as an enormous stroke back to wherever the cursor still was.
+   */
+  recentre(x: number, y: number): void {
+    this.samples = [{ t: performance.now(), x: clamp(x, -1, 1), y: clamp(y, -1, 1) }];
   }
 
   /** Cursor position at time `t` (performance.now() milliseconds). */

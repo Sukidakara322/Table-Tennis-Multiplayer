@@ -1,3 +1,4 @@
+import { PADDLE_HOVER_Y } from './constants';
 import { clamp, type Vec2, type Vec3 } from './vec';
 
 /**
@@ -24,12 +25,13 @@ const AIM_SHIFT_PER_SWIPE = 0.45;
 const CENTRE_PULL = 0.5;
 const AIM_REFERENCE_LENGTH = 2.7;
 /**
- * How high the blade is riding sets the face angle, as it does in a real stroke: down by the net the
- * racket is open, to lift a low ball over; up at the back of the ramp it is closed, to drive a high one
- * down. Since the blade's height comes from where you stand, this is the same slope read as an angle.
+ * How high the racket is held sets the face angle, as it does in a real stroke: held low the face is
+ * open, to lift a low ball over the net; held high it is closed, to drive a high one down. Since the
+ * height is straight off the mouse, where you hold the racket on its plane is the angle you play with,
+ * and the middle of that plane — where the racket starts every point — is square.
  */
-const NEUTRAL_HEIGHT = 0.25;
-const PITCH_PER_METRE = 1.0;
+const NEUTRAL_HEIGHT = PADDLE_HOVER_Y;
+const PITCH_PER_METRE = 0.8;
 
 /** Unit normal of the racket face: the direction it plays towards (mostly -z), in the owner's local frame. */
 export function faceNormal(face: PaddleFace): Vec3 {

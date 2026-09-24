@@ -1,4 +1,4 @@
-import { DT, hoverAt, PADDLE_HIT_RADIUS, REACH_FAR_Z, REACH_IN_Z, REACH_NEAR_Z, STROKE_SWEEP } from './constants';
+import { AIM_Y_MAX, AIM_Y_MIN, DT, PADDLE_HIT_RADIUS, REACH_FAR_Z, REACH_IN_Z, REACH_NEAR_Z, STROKE_SWEEP } from './constants';
 import { cloneBall, stepBall, type BallState, type PhysicsEvent } from './physics';
 import { copyVec3, type Vec3 } from './vec';
 
@@ -35,11 +35,12 @@ export function predictMeetPoint(ball: BallState, alreadyBounced = false): MeetP
     }
     if (bounces >= 2 || sim.pos.z > REACH_FAR_Z) break;
     if (sim.pos.z < REACH_IN_Z) continue;
-    // Only where the racket could actually meet it: the blade hovers at a fixed height, so the ball
-    // has to be passing through that band, and never before it has bounced (that would be a volley).
+    // Only where the racket could actually meet it, and never before it has bounced (a volley).
     if (bounces < 1) continue;
-    // Anywhere a stroke could reach: the blade at that spot, plus the height its sweep covers.
-    if (Math.abs(sim.pos.y - hoverAt(sim.pos.z)) > PADDLE_HIT_RADIUS + STROKE_SWEEP - MEET_MARGIN) continue;
+    // Anywhere on the plane the racket is held on, plus the blade and the height its sweep covers.
+    const reachLow = AIM_Y_MIN - (PADDLE_HIT_RADIUS + STROKE_SWEEP - MEET_MARGIN);
+    const reachHigh = AIM_Y_MAX + (PADDLE_HIT_RADIUS + STROKE_SWEEP - MEET_MARGIN);
+    if (sim.pos.y < reachLow || sim.pos.y > reachHigh) continue;
 
     const point = { pos: copyVec3(sim.pos), time: i * DT };
     // Prefer meeting it comfortably back rather than snatching at it over the table.

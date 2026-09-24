@@ -1,13 +1,4 @@
-import {
-  AIM_FORWARD_MAX,
-  AIM_FORWARD_MIN,
-  AIM_X_LIMIT,
-  hoverAt,
-  PADDLE_READY_FORWARD,
-  PADDLE_X_LIMIT,
-  REACH_FAR_Z,
-  REACH_IN_Z,
-} from '../../shared/constants';
+import { AIM_X_LIMIT, AIM_Y_MAX, AIM_Y_MIN, PADDLE_HOVER_Y, READY_STAND_Z } from '../../shared/constants';
 import type { BallState } from '../../shared/physics';
 import type { MeetPoint } from '../../shared/predict';
 import { clamp, vec3, type Vec2, type Vec3 } from '../../shared/vec';
@@ -15,39 +6,39 @@ import type { PointerInput } from './input';
 
 export type GamePhase = 'serve' | 'rally' | 'point' | 'over';
 
-/** A paddle in its owner's local frame (own end of the table at +z). */
+/** A racket in its owner's local frame (own end of the table at +z). */
 export interface Paddle {
+  /**
+   * Where the blade is. `x` and `y` are the player's — the mouse holds the racket anywhere on the
+   * plane in front of them — while `z` is the game's: you stand at the end line and only step in for a
+   * ball dying short (see `standFor`).
+   */
   pos: Vec3;
   prevPos: Vec3;
-  /** Where the player has put the racket on the table: `x` sideways, `y` how far forward of the back
-   * of the reach (so larger `y` is closer to the net). */
+  /** Where on its plane the racket is being held: sideways, and how high. */
   aim: Vec2;
-  /** Racket velocity across the table (m/s): forward = topspin, backward = backspin, sideways = sidespin. */
+  /** Stroke speed (m/s): sweeping up brushes topspin, down cuts backspin, sideways puts sidespin on. */
   swing: Vec2;
 }
 
 export function createPaddle(): Paddle {
-  const readyZ = forwardToZ(PADDLE_READY_FORWARD);
-  const ready = vec3(0, hoverAt(readyZ), readyZ);
+  const ready = vec3(0, PADDLE_HOVER_Y, READY_STAND_Z);
   return {
     pos: { ...ready },
     prevPos: { ...ready },
-    aim: { x: 0, y: PADDLE_READY_FORWARD },
+    aim: { x: ready.x, y: ready.y },
     swing: { x: 0, y: 0 },
   };
 }
 
-/** Keeps the racket inside hard world bounds, on the surface it runs along plus its stroke's lift. */
-export function clampPaddle(paddle: Paddle): void {
-  const { pos } = paddle;
-  pos.x = clamp(pos.x, -PADDLE_X_LIMIT, PADDLE_X_LIMIT);
-  pos.z = clamp(pos.z, REACH_IN_Z, REACH_FAR_Z);
-  pos.y = hoverAt(pos.z);
-}
-
-/** Where the racket stands, from the forward part of the aim. */
-export function forwardToZ(forward: number): number {
-  return REACH_FAR_Z - clamp(forward, AIM_FORWARD_MIN, AIM_FORWARD_MAX);
+/** Stands the racket at `pos` this instant, with no stroke carried over from where it was. */
+export function placePaddle(paddle: Paddle, pos: Vec3): void {
+  paddle.pos = { ...pos };
+  paddle.prevPos = { ...pos };
+  paddle.aim.x = pos.x;
+  paddle.aim.y = pos.y;
+  paddle.swing.x = 0;
+  paddle.swing.y = 0;
 }
 
 export interface ControllerContext {
@@ -55,7 +46,7 @@ export interface ControllerContext {
   isServer: boolean;
   /** Ball in the controller's local frame. */
   ball: BallState;
-  /** Where the ball will pass through this player's reach (used by the bot only). */
+  /** Where the ball will pass through this player's reach. */
   meetPoint: MeetPoint | null;
   /** The incoming ball has bounced on this player's half, so it can be played without volleying. */
   incomingBounced: boolean;
@@ -67,17 +58,42 @@ export interface ControllerContext {
 }
 
 export interface PaddleController {
-  /** Places the racket on the table (sideways and along it) and sets its swing. */
+  /** Holds the racket on its plane and strokes through the ball. Depth is the game's, for everyone. */
   update(paddle: Paddle, ctx: ControllerContext): void;
   resetForPoint(): void;
 }
 
-const SWING_WINDOW_MS = 50;
+/**
+ * How far back the stroke is read. A stroke is a movement of the hand, not an instant: read over too
+ * short a window, a player who has swung and arrived at the ball is holding still at the moment of
+ * contact and gets a dead block for a shot they really played. A window about as long as the stroke
+ * itself is what makes the swing you felt the swing the ball gets.
+ */
+const SWING_WINDOW_MS = 110;
+/** Short enough to catch a flick, long enough that one jittery frame is not a stroke. */
+const MIN_SWING_SPAN_MS = 25;
+const HISTORY_STEP_MS = 6;
+
+/** Where on its plane the mouse is holding the racket. Plainly linear, so it goes where you put it. */
+export function aimFromCursor(cursor: Vec2): Vec2 {
+  const across = clamp(cursor.x, -1, 1);
+  const up = (clamp(cursor.y, -1, 1) + 1) / 2;
+  return { x: across * AIM_X_LIMIT, y: AIM_Y_MIN + up * (AIM_Y_MAX - AIM_Y_MIN) };
+}
+
+/** The cursor that holds the racket at `aim` — used to put the mouse back with it between points. */
+export function cursorForAim(aim: Vec2): Vec2 {
+  return {
+    x: clamp(aim.x / AIM_X_LIMIT, -1, 1),
+    y: clamp(((aim.y - AIM_Y_MIN) / (AIM_Y_MAX - AIM_Y_MIN)) * 2 - 1, -1, 1),
+  };
+}
 
 /**
- * The mouse moves the racket around the table with no easing at all: sideways across your half, and up
- * the table towards the net or back away from it. Nothing follows the ball, so meeting it is the
- * player's job, and the forward or backward part of that same motion is the stroke that plays it.
+ * The mouse moves the racket, freely and with no easing at all, across the plane it is held on in
+ * front of you. Where the racket is when the ball arrives is one half of a stroke; how it is moving
+ * is the other — sweeping up brushes topspin over the ball, down cuts backspin under it, sideways
+ * puts sidespin on. A racket that is not moving plays no stroke at all, only a bare rebound.
  */
 export class HumanController implements PaddleController {
   private history: Array<{ t: number; x: number; y: number }> = [];
@@ -89,24 +105,46 @@ export class HumanController implements PaddleController {
   }
 
   update(paddle: Paddle, ctx: ControllerContext): void {
-    // Straight from the mouse, this instant: no easing, no lag of our own. The mapping is a plain
-    // linear one rather than a ray cast onto the table, because near the net that ray runs almost
-    // parallel to the surface — a pixel of mouse would throw the racket metres, and the same jump
-    // would read as a swing of tens of metres per second.
+    // Straight from the mouse, this instant: no easing, no lag of our own.
     const cursor = this.input.cursorAt(ctx.wallTime);
-    paddle.aim.x = clamp(cursor.x, -1, 1) * AIM_X_LIMIT;
-    paddle.aim.y = clamp(((clamp(cursor.y, -1, 1) + 1) / 2) * AIM_FORWARD_MAX, AIM_FORWARD_MIN, AIM_FORWARD_MAX);
-    // The swing is the racket's own travel across the table: sideways for sidespin, forward to drive
-    // through the ball, backwards to cut under it.
-    this.history.push({ t: ctx.wallTime, x: paddle.aim.x, y: paddle.aim.y });
-    while (this.history.length > 2 && this.history[0]!.t < ctx.wallTime - SWING_WINDOW_MS) this.history.shift();
-    const first = this.history[0]!;
-    const span = (ctx.wallTime - first.t) / 1000;
-    paddle.swing.x = span > 0 ? (paddle.aim.x - first.x) / span : 0;
-    paddle.swing.y = span > 0 ? (paddle.aim.y - first.y) / span : 0;
+    const at = aimFromCursor(cursor);
+    paddle.aim.x = at.x;
+    paddle.aim.y = at.y;
+    paddle.pos.x = at.x;
+    paddle.pos.y = at.y;
 
-    paddle.pos.x = paddle.aim.x;
-    paddle.pos.z = forwardToZ(paddle.aim.y);
-    paddle.pos.y = hoverAt(paddle.pos.z);
+    // A few samples per frame is plenty to read a stroke from, and keeps the search below small.
+    const last = this.history[this.history.length - 1];
+    if (!last || ctx.wallTime - last.t >= HISTORY_STEP_MS) this.history.push({ t: ctx.wallTime, x: at.x, y: at.y });
+    while (this.history.length > 2 && this.history[0]!.t < ctx.wallTime - SWING_WINDOW_MS) this.history.shift();
+    this.readSwing(paddle.swing);
+  }
+
+  /**
+   * The fastest movement anywhere in the window, not the average across it. A stroke is short and the
+   * hand stops at the end of it; averaged over a window long enough to hold the whole stroke, a sharp
+   * flick reads as a gentle drift, and reading only the last instant loses the stroke the moment the
+   * hand settles. Taking the quickest stretch of the window gives the swing the player actually made,
+   * and it fades on its own as that stretch falls out of the window.
+   */
+  private readSwing(out: Vec2): void {
+    const h = this.history;
+    let best = 0;
+    out.x = 0;
+    out.y = 0;
+    for (let i = 0; i < h.length - 1; i++) {
+      for (let j = i + 1; j < h.length; j++) {
+        const span = (h[j]!.t - h[i]!.t) / 1000;
+        if (span < MIN_SWING_SPAN_MS / 1000) continue;
+        const vx = (h[j]!.x - h[i]!.x) / span;
+        const vy = (h[j]!.y - h[i]!.y) / span;
+        const speed = Math.hypot(vx, vy);
+        if (speed > best) {
+          best = speed;
+          out.x = vx;
+          out.y = vy;
+        }
+      }
+    }
   }
 }
