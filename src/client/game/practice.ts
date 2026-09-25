@@ -5,6 +5,7 @@ import {
   HALF_WIDTH,
   HIT_COOLDOWN,
   BODY_FOLLOW_TIME,
+  AIM_X_LIMIT,
   AIM_Y_MAX,
   AIM_Y_MIN,
   PADDLE_HOVER_Y,
@@ -32,7 +33,6 @@ import { BotController, type BotDifficulty } from './bot';
 import { PointerInput } from './input';
 import {
   createPaddle,
-  cursorForAim,
   HumanController,
   placePaddle,
   type GamePhase,
@@ -112,8 +112,9 @@ export class PracticeSession {
       onPrimaryDown: () => {},
     });
     this.input.sensitivity = settings.sensitivity;
+    this.limitCursorToReach();
 
-    this.human = new HumanController(this.input);
+    this.human = new HumanController(this.input, (cursor) => this.renderer.cursorToPlane(cursor));
     this.controllers = [this.human, new BotController(options.difficulty)];
 
     this.ui = new GameUi(this.root, this.names, settings, {
@@ -206,6 +207,18 @@ export class PracticeSession {
    * decided, so the players see the point out first. The mouse is moved with the racket, or the next
    * flick would read as a stroke back to wherever the cursor had been left.
    */
+  /**
+   * Stops the cursor at the edge of what the racket can reach. The mapping is one-to-one on screen, so
+   * the reachable plane covers only part of it; letting the cursor run past that would leave the mouse
+   * and the blade disagreeing, and every stroke back from the edge would start with dead travel.
+   */
+  private limitCursorToReach(): void {
+    const across = this.renderer.planeToCursor({ x: AIM_X_LIMIT, y: PADDLE_HOVER_Y });
+    const low = this.renderer.planeToCursor({ x: 0, y: AIM_Y_MIN });
+    const high = this.renderer.planeToCursor({ x: 0, y: AIM_Y_MAX });
+    this.input.limit = { x: Math.abs(across.x), y: Math.max(Math.abs(low.y), Math.abs(high.y)) };
+  }
+
   private resetPaddles(): void {
     const server = currentServer(this.match);
     // The server starts a little higher, so the ball waiting below the blade can be seen at all.
@@ -217,7 +230,7 @@ export class PracticeSession {
     this.bodyX = [0, 0];
     // The mouse is put back where the racket now is, or the jump from wherever the cursor was left
     // would read as a stroke — and, on a serve, strike the waiting ball on the spot.
-    const cursor = cursorForAim(readyFor(HUMAN));
+    const cursor = this.renderer.planeToCursor(readyFor(HUMAN));
     this.input.recentre(cursor.x, cursor.y);
   }
 

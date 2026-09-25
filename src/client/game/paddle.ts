@@ -73,20 +73,12 @@ const SWING_WINDOW_MS = 110;
 const MIN_SWING_SPAN_MS = 25;
 const HISTORY_STEP_MS = 6;
 
-/** Where on its plane the mouse is holding the racket. Plainly linear, so it goes where you put it. */
-export function aimFromCursor(cursor: Vec2): Vec2 {
-  const across = clamp(cursor.x, -1, 1);
-  const up = (clamp(cursor.y, -1, 1) + 1) / 2;
-  return { x: across * AIM_X_LIMIT, y: AIM_Y_MIN + up * (AIM_Y_MAX - AIM_Y_MIN) };
-}
-
-/** The cursor that holds the racket at `aim` — used to put the mouse back with it between points. */
-export function cursorForAim(aim: Vec2): Vec2 {
-  return {
-    x: clamp(aim.x / AIM_X_LIMIT, -1, 1),
-    y: clamp(((aim.y - AIM_Y_MIN) / (AIM_Y_MAX - AIM_Y_MIN)) * 2 - 1, -1, 1),
-  };
-}
+/**
+ * Turns the cursor into a spot on the racket's plane. Supplied by the renderer (`cursorToPlane`),
+ * because the only mapping worth having is the one that puts the blade exactly where you are pointing,
+ * and that is a property of the lens and the window, not a number anyone can write down here.
+ */
+export type CursorToPlane = (cursor: Vec2) => Vec2;
 
 /**
  * The mouse moves the racket, freely and with no easing at all, across the plane it is held on in
@@ -97,16 +89,24 @@ export function cursorForAim(aim: Vec2): Vec2 {
 export class HumanController implements PaddleController {
   private history: Array<{ t: number; x: number; y: number }> = [];
 
-  constructor(private readonly input: PointerInput) {}
+  constructor(
+    private readonly input: PointerInput,
+    private readonly toPlane: CursorToPlane,
+  ) {}
 
   resetForPoint(): void {
     this.history.length = 0;
   }
 
   update(paddle: Paddle, ctx: ControllerContext): void {
-    // Straight from the mouse, this instant: no easing, no lag of our own.
+    // Straight from the mouse, this instant: no easing, no lag of our own. Where the cursor points is
+    // where the blade goes, and the clamps below are the edge of what an arm can reach.
     const cursor = this.input.cursorAt(ctx.wallTime);
-    const at = aimFromCursor(cursor);
+    const pointed = this.toPlane(cursor);
+    const at = {
+      x: clamp(pointed.x, -AIM_X_LIMIT, AIM_X_LIMIT),
+      y: clamp(pointed.y, AIM_Y_MIN, AIM_Y_MAX),
+    };
     paddle.aim.x = at.x;
     paddle.aim.y = at.y;
     paddle.pos.x = at.x;

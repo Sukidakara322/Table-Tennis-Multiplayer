@@ -98,11 +98,15 @@ export const STROKE_SWEEP = 0.14;
 
 /**
  * The viewer's eye, in the viewer's local frame. Shared so the mouse mapping matches what is drawn.
- * Standing close behind your own end and looking down on the table (~28°) is what makes it read as a
- * long table: the far end then looks about 40% as wide as the near one, where a camera parked metres
- * back flattens it to 55% however narrow the lens. The lens zooms back out instead (see `fitLens`).
+ * Standing close behind your own end is what makes it read as a long table: the far end then looks
+ * about 40% as wide as the near one, where a camera parked metres back flattens it to 55% however
+ * narrow the lens. The lens zooms back out instead (see `fitLens`).
+ *
+ * The height is the look-down angle, and it is a player's-eye choice rather than a physical one: high
+ * up you are reading the table like a map, low down you are behind the ball looking along it. This
+ * sits at about 21°, low enough to feel side-on and high enough that the far half is not a sliver.
  */
-export const VIEW_EYE_Y = 1.25;
+export const VIEW_EYE_Y = 0.95;
 export const VIEW_EYE_Z = HALF_LENGTH + 1.6;
 /** Hard world bounds for the paddle wherever it is. */
 export const PADDLE_X_LIMIT = 0.95;
@@ -132,7 +136,7 @@ export const SERVE_BALL_HEIGHT = 0.12;
  * a little below the racket and a little beyond it sits inside the blade's own silhouette — and being
  * told to bring the racket down to a ball you cannot see is no instruction at all.
  */
-export const SERVE_READY_Y = 0.42;
+export const SERVE_READY_Y = 0.46;
 /**
  * How fast the mouse must sweep to strike the waiting ball. A serve is a deliberate flick and nothing
  * else: about a third of the racket's plane crossed in a tenth of a second, far past anything that
@@ -144,4 +148,4 @@ export const SERVE_MIN_FLICK = 1.8;
  * racket starts the point, and narrow enough that one held up at the top of its plane has to be
  * brought down to the ball first — which is the one thing a serve asks of you.
  */
-export const SERVE_REACH = 0.34;
+export const SERVE_REACH = 0.40;

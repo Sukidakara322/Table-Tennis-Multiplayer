@@ -22,6 +22,13 @@ const MAX_EVENT_MOVEMENT = 250;
 export class PointerInput {
   sensitivity = 1;
   locked = false;
+  /**
+   * How far the cursor may travel from the centre of the screen, per axis. The racket can only be
+   * within arm's reach, so only part of the screen means anything; without this the cursor wanders out
+   * into the part that does not, and then has to be dragged all the way back before the blade so much
+   * as twitches. Set from the reachable range once the lens is known (see `planeToCursor`).
+   */
+  limit: Vec2 = { x: 1, y: 1 };
   /** Starts centred, which is where the racket is held between points (see `resetPaddles`). */
   private samples: CursorSample[] = [{ t: performance.now(), x: 0, y: 0 }];
 
@@ -54,7 +61,12 @@ export class PointerInput {
    * the next flick of the wrist would read as an enormous stroke back to wherever the cursor still was.
    */
   recentre(x: number, y: number): void {
-    this.samples = [{ t: performance.now(), x: clamp(x, -1, 1), y: clamp(y, -1, 1) }];
+    this.samples = [{ t: performance.now(), x: this.hold(x, this.limit.x), y: this.hold(y, this.limit.y) }];
+  }
+
+  private hold(value: number, limit: number): number {
+    const edge = Math.min(Math.abs(limit), 1);
+    return clamp(value, -edge, edge);
   }
 
   /** Cursor position at time `t` (performance.now() milliseconds). */
@@ -90,8 +102,8 @@ export class PointerInput {
     const mx = clamp(event.movementX, -MAX_EVENT_MOVEMENT, MAX_EVENT_MOVEMENT);
     const my = clamp(event.movementY, -MAX_EVENT_MOVEMENT, MAX_EVENT_MOVEMENT);
     const last = this.samples[this.samples.length - 1]!;
-    const x = clamp(last.x + (mx / (window.innerWidth / 2)) * this.sensitivity, -1, 1);
-    const y = clamp(last.y - (my / (window.innerHeight / 2)) * this.sensitivity, -1, 1);
+    const x = this.hold(last.x + (mx / (window.innerWidth / 2)) * this.sensitivity, this.limit.x);
+    const y = this.hold(last.y - (my / (window.innerHeight / 2)) * this.sensitivity, this.limit.y);
     const t = Math.max(event.timeStamp, last.t);
     this.samples.push({ t, x, y });
     while (this.samples.length > 2 && this.samples[0]!.t < t - HISTORY_MS) this.samples.shift();

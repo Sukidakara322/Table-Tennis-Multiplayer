@@ -60,7 +60,12 @@ const GRIP_LENGTH = PADDLE_VISUAL_RADIUS + 0.08;
  * near one depends only on where the eye is, never on the lens, so a distant camera flattens the table
  * into a short slab however much you zoom. The lens then zooms back out (see `fitLens`).
  */
-const CAMERA_LOOK_AT = { x: 0, y: -0.72, z: -0.9 };
+/**
+ * Where the view axis points. Its height has to move with VIEW_EYE_Y, or lowering the eye also swings
+ * the whole table up the screen: what sets the composition is where the axis crosses the table, and
+ * that is the eye and this point together. Keep the axis passing about 0.26 m under the net.
+ */
+const CAMERA_LOOK_AT = { x: 0, y: -0.63, z: -0.9 };
 /**
  * Everything that must stay on screen, in the viewer's local frame, with the screen margin to keep
  * around it: the four table corners, every corner of the plane the racket is held on, and headroom
@@ -216,6 +221,35 @@ export class GameRenderer {
     this.viewPlayer = player;
     this.paddles[player].setLocalView(true);
     this.paddles[player === 0 ? 1 : 0].setLocalView(false);
+  }
+
+  /**
+   * Where on the racket's plane the cursor is pointing, in the viewer's local frame. This is the whole
+   * mouse-to-racket mapping, and it is done by unprojecting rather than by a hand-set scale so that it
+   * is exactly one-to-one on screen: move the mouse a hundred pixels and the blade moves a hundred
+   * pixels, on any window, at any field of view. Anything less and the racket lags behind what you are
+   * pointing at by a fixed fraction — which is survivable when a ball comes straight at you and hopeless
+   * when it is going to the corner, because then the mistake is proportional to how far you must reach.
+   *
+   * It is measured against the control camera, which never pans, so leaning the view cannot shift where
+   * the mouse puts the racket. The plane is upright and square to the view, so this is well conditioned
+   * everywhere on screen — unlike casting onto the table, which is nearly edge-on near the net.
+   */
+  cursorToPlane(cursor: Vec2): Vec2 {
+    const ray = new THREE.Vector3(clamp(cursor.x, -1, 1), clamp(cursor.y, -1, 1), 0.5).unproject(this.controlCamera);
+    const eye = this.controlCamera.position;
+    ray.sub(eye);
+    const planeZ = this.viewPlayer === 0 ? STAND_Z : -STAND_Z;
+    const t = Math.abs(ray.z) < 1e-6 ? 0 : (planeZ - eye.z) / ray.z;
+    const hit = { x: eye.x + ray.x * t, y: eye.y + ray.y * t, z: planeZ };
+    return { x: this.viewPlayer === 0 ? hit.x : -hit.x, y: hit.y };
+  }
+
+  /** The cursor that points at `aim` on that plane — the exact inverse of `cursorToPlane`. */
+  planeToCursor(aim: Vec2): Vec2 {
+    const world = toWorldVec(this.viewPlayer, { x: aim.x, y: aim.y, z: STAND_Z });
+    const ndc = new THREE.Vector3(world.x, world.y, world.z).project(this.controlCamera);
+    return { x: ndc.x, y: ndc.y };
   }
 
   /** 0 = no glow, 1 = default, 2 = strong. */
@@ -377,6 +411,15 @@ export class GameRenderer {
     this.scene.add(cyan, magenta);
   }
 
+  /**
+   * The floor, the grid and nothing on the horizon. There used to be a synthwave sun at each end, and
+   * it cannot work from this camera: the view looks down at the table, so the floor's horizon runs
+   * within a degree of the top of the frame, and whatever is put out there is squeezed into that
+   * degree. Far away it was a twenty-pixel bright sliver clipped by the screen edge, which read as a
+   * rendering fault; brought close enough to be seen properly it became a wall behind the far player.
+   * There is no distance that makes it a sun, so there is no sun. (Restore it with the eye back up
+   * around 1.25 m, where the horizon sits well inside the frame.)
+   */
   private buildArena(): void {
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), new THREE.MeshBasicMaterial({ color: 0x07030f }));
     floor.rotation.x = -Math.PI / 2;
@@ -390,42 +433,6 @@ export class GameRenderer {
     gridMaterial.opacity = 0.65;
     this.scene.add(grid);
 
-    // A striped synthwave sun at each end, so both players see one on the horizon.
-    for (const sign of [-1, 1]) {
-      const sun = new THREE.Mesh(
-        new THREE.PlaneGeometry(16, 16),
-        new THREE.ShaderMaterial({
-          uniforms: {
-            uTop: { value: new THREE.Color(1.0, 0.42, 0.18) },
-            uBottom: { value: new THREE.Color(0.85, 0.04, 0.48) },
-          },
-          vertexShader: /* glsl */ `
-            varying vec2 vUv;
-            void main() {
-              vUv = uv;
-              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }`,
-          fragmentShader: /* glsl */ `
-            uniform vec3 uTop;
-            uniform vec3 uBottom;
-            varying vec2 vUv;
-            void main() {
-              vec2 c = vUv - 0.5;
-              if (length(c) > 0.5) discard;
-              float y = vUv.y;
-              float band = fract(y * 16.0);
-              float gap = clamp((0.55 - y) * 1.1, 0.0, 0.7);
-              if (y < 0.55 && band < gap) discard;
-              gl_FragColor = vec4(mix(uBottom, uTop, smoothstep(0.1, 0.9, y)), 1.0);
-            }`,
-          fog: false,
-        }),
-      );
-      // Centre just above eye level; the floor hides the lower half, so it sits on the horizon.
-      sun.position.set(0, 1.2, sign * 70);
-      sun.rotation.y = sign > 0 ? Math.PI : 0;
-      this.scene.add(sun);
-    }
   }
 
   private buildTable(): void {
