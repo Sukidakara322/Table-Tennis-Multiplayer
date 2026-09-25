@@ -16,7 +16,7 @@ export const CONTROLS_HELP: Array<[string, string]> = [
   ['Sweep down', 'Backspin: floats over the net and dies on the bounce'],
   ['Sweep sideways', 'Sidespin, which bends the ball across the table'],
   ['Stand still', 'No stroke at all — a bare rebound off the rubber, wherever that sends it'],
-  ['Serving', 'Flick the mouse through the waiting ball: up for topspin, down for backspin'],
+  ['Serving', 'Bring the racket down to the waiting ball, then flick: up for topspin, down for backspin'],
   ['Esc', 'Menu'],
 ];
 

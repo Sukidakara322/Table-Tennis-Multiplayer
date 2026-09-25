@@ -1,4 +1,4 @@
-import { BALL_RADIUS, BALL_SLOWDOWN, DT, HALF_LENGTH, HALF_WIDTH, MAX_SPIN } from './constants';
+import { BALL_RADIUS, BALL_SLOWDOWN, DT, HALF_LENGTH, HALF_WIDTH, MAX_SPIN, STAND_Z } from './constants';
 import { stepBall, type BallState, type PhysicsEvent, type StepOptions } from './physics';
 import { faceNormal, type PaddleFace } from './racket';
 import { clamp, copyVec3, cross3, length3, lerp, type Vec2, type Vec3 } from './vec';
@@ -43,7 +43,22 @@ export const HIT_TUNING = {
    * Speeds are deliberately gentle: a rally ball crosses the table in about three quarters of a second,
    * which leaves time to read the spin, shape a stroke and watch the ball bend.
    */
-  servePower: { base: slow(5.0), perSwing: slow(0.4), min: slow(5.0), max: slow(7) },
+  // The floor here is what it takes for a serve to still be moving when it gets to the receiver. A
+  // serve spends half its pace on its own half before it even crosses, and a cut serve loses more
+  // again off that bounce, so the softest legal serve is still struck firmly: the alternative is a
+  // backspin serve that dies in the middle of the table, which nobody standing still can answer.
+  // The floor is what it takes for a serve to still be moving when it reaches the receiver — it spends
+  // half its pace on its own half before it even crosses — and the ceiling is what the table can hold:
+  // past this there is no launch that fits two bounces into the length of it, whatever it is aimed at.
+  servePower: { base: slow(6.2), perSwing: slow(0.4), min: slow(6.2), max: slow(7.2) },
+  /**
+   * A serve carries less spin than a full stroke, because it is a flick of the wrist at a ball resting
+   * against the bat rather than a swing through a moving one. It also has to be: a serve has to come
+   * down twice inside the length of the table, and past about this much spin there is no launch angle
+   * that fits both bounces in — the ball either dips into the net or floats off the end, whatever it
+   * is aimed at. A serve you cannot physically make is a fault the server never had a say in.
+   */
+  serveSpinScale: 0.55,
   // The floor is what it takes to carry the ball over the net and onto the far half at all: a push or
   // a block is slow, but it still crosses. Below this a stroke would simply drop on your own side.
   rallyPower: { base: slow(2.2), perIncoming: 0.25, perSwing: slow(0.9), min: slow(4.6), max: slow(9) },
@@ -60,10 +75,16 @@ export const HIT_TUNING = {
   serveCurveAwareness: 0.75,
   /** Fraction of incoming spin carried into the return (the rubber reverses it). */
   spinReturn: -0.35,
-  /** How strongly incoming spin deflects the ball off the racket. */
-  spinKick: slow(0.15),
-  /** Vertical launch speed added per m/s of upward swing. */
-  liftPerSwing: slow(0.22),
+  /**
+   * How strongly incoming spin deflects the ball off the racket — the thing a player has to read and
+   * answer. It is set against what they can answer it *with*: a stroke is worth liftPerSwing per m/s
+   * and the face angle another tenth or so, so a heavy ball now costs about a metre per second of
+   * deliberate stroke to hold down. At three times this it cost more stroke than anyone has, and
+   * reading the spin correctly still lost the point — which is not difficulty, it is a coin toss.
+   */
+  spinKick: slow(0.065),
+  /** Vertical launch speed added per m/s of upward swing: the player's side of that same bargain. */
+  liftPerSwing: slow(0.35),
   /** Serves fly exactly as solved (their net clearance is checked); swing and face shape them through spin. */
   serveLiftScale: 0,
   /** Launch errors per metre of distance from the racket centre. */
@@ -116,10 +137,11 @@ export function computeReturn({ contact, swing, offset, face, isServe }: ReturnI
   const into = sx * normal.x + sy * normal.y; // the paddle's motion has no depth component
   const brush: Vec3 = { x: sx - into * normal.x, y: sy - into * normal.y, z: -into * normal.z };
   const axis = cross3(normal, brush);
+  const brushSpin = isServe ? T.brushSpin * T.serveSpinScale : T.brushSpin;
   const spin: Vec3 = {
-    x: clamp(-T.brushSpin * axis.x + contact.spin.x * T.spinReturn, -MAX_SPIN, MAX_SPIN),
-    y: clamp(-T.brushSpin * axis.y + contact.spin.y * T.spinReturn, -MAX_SPIN, MAX_SPIN),
-    z: clamp(-T.brushSpin * axis.z + contact.spin.z * T.spinReturn, -MAX_SPIN, MAX_SPIN),
+    x: clamp(-brushSpin * axis.x + contact.spin.x * T.spinReturn, -MAX_SPIN, MAX_SPIN),
+    y: clamp(-brushSpin * axis.y + contact.spin.y * T.spinReturn, -MAX_SPIN, MAX_SPIN),
+    z: clamp(-brushSpin * axis.z + contact.spin.z * T.spinReturn, -MAX_SPIN, MAX_SPIN),
   };
 
   const P = isServe ? T.servePower : T.rallyPower;
@@ -130,8 +152,12 @@ export function computeReturn({ contact, swing, offset, face, isServe }: ReturnI
   const drive = sy > 0 ? sy : -sy * T.cutPace;
   const power = clamp(P.base + incoming + drive * P.perSwing + Math.max(0, into) * T.throughPower, P.min, P.max);
   const f = (power - P.min) / (P.max - P.min);
-  // Harder shots aim deeper on the opponent's half.
-  const targetZ = -HALF_LENGTH * (isServe ? 0.35 + 0.55 * f : 0.4 + 0.5 * f);
+  // Harder shots aim deeper on the opponent's half. Everything is aimed past the middle of it, because
+  // the receiver stands at a fixed depth and cannot come forward: a ball that lands short and dies in
+  // front of them is unanswerable, so it is not a ball anyone gets to hit. That bites hardest on the
+  // serve, which has already spent half its pace on its own half before it crosses, so a serve is
+  // aimed deeper still — it has the least left with which to carry the rest of the way.
+  const targetZ = -HALF_LENGTH * (isServe ? 0.68 + 0.26 * f : 0.52 + 0.33 * f);
   // The ball leaves where the racket face points; the face turns with the sideways swipe (see `paddleFace`).
   const faceAimX = pos.x + Math.tan(face.yaw) * Math.abs(targetZ - pos.z);
   const targetX = clamp(faceAimX + offset.x * T.offCenterAim, -HALF_WIDTH * 0.88, HALF_WIDTH * 0.88);
@@ -241,29 +267,45 @@ function firstContactZ(pos: Vec3, vx: number, vy: number, vz: number, spin: Vec3
 const SHORT_OF_THE_NET = HALF_LENGTH * 4;
 
 const SERVE_CANDIDATES = 16;
-/** First-bounce candidates as a fraction of the server's half, from near the net to near the end line. */
-const SERVE_FIRST_BOUNCE_RANGE: [number, number] = [0.08, 0.99];
-const SERVE_VY_RANGE: [number, number] = [slow(-5), slow(4)];
+/**
+ * Where the serve's own-half bounce is allowed to be: from just past the net up to just short of the
+ * ball itself. The far end has to be measured from the ball rather than from the end line, because the
+ * ball is struck out over the table — candidates behind it would ask the solver to land the serve
+ * where it started, and every one of them wasted is a first bounce the serve cannot be aimed at.
+ */
+const SERVE_FIRST_BOUNCE_NEAR_NET = HALF_LENGTH * 0.08;
+const SERVE_FIRST_BOUNCE_BACK_OFF = 0.1;
+/**
+ * How steeply a serve may be launched. The downward end has to be generous: the ball is struck out
+ * over the table, so a serve from up at head-of-the-plane height has barely a metre of its own half in
+ * front of it, and the only way to put the first bounce where it belongs — the middle of that half,
+ * far enough from the net to come up over it and far enough from the end line to have somewhere to
+ * come down — is to drive it down sharply. Cap this too low and those serves have nowhere legal to go.
+ */
+const SERVE_VY_RANGE: [number, number] = [slow(-9), slow(4)];
 
 /**
- * A serve must bounce on both halves, which is not monotonic in vy. Try first-bounce points
- * along the server's half, keep those whose follow-through clears the net, and pick the one
- * whose second bounce lands closest to the target.
+ * A serve must bounce on both halves, which is not monotonic in vy. Try first-bounce points along the
+ * server's half and keep the ones that come out legal. A serve that carries on to the receiver beats
+ * one that lands nearer the target and dies in front of them, whatever the swing asked for: the whole
+ * point of aiming a serve is that someone has to play it.
  */
 function solveServeVy(pos: Vec3, vx: number, vz: number, spin: Vec3, targetZ: number): number {
   // Serves are struck low (paddle height), so allow an upward launch that arcs down onto the own half.
   const [lo, hi] = SERVE_VY_RANGE;
   let bestVy = solveLaunchVy(pos, vx, vz, spin, HALF_LENGTH * 0.6, lo, hi);
   let bestError = Infinity;
+  let bestCarries = false;
   // When a swing is too weak or too heavily loaded to serve legally at all, fall back to the launch
   // that at least carries furthest rather than one that was never simulated: the serve still fails,
   // but it fails the way that swing deserves instead of dumping into the net from a knife edge.
   let bestReach = Infinity;
+  const near = SERVE_FIRST_BOUNCE_NEAR_NET;
+  const far = Math.max(near, Math.min(HALF_LENGTH, pos.z) - SERVE_FIRST_BOUNCE_BACK_OFF);
   for (let i = 0; i < SERVE_CANDIDATES; i++) {
-    const [near, far] = SERVE_FIRST_BOUNCE_RANGE;
-    const firstBounceZ = HALF_LENGTH * (near + ((far - near) * i) / (SERVE_CANDIDATES - 1));
+    const firstBounceZ = near + ((far - near) * i) / (SERVE_CANDIDATES - 1);
     const vy = solveLaunchVy(pos, vx, vz, spin, firstBounceZ, lo, hi);
-    const { secondZ, reach } = serveOutcome(pos, vx, vy, vz, spin);
+    const { secondZ, reach, carries } = serveOutcome(pos, vx, vy, vz, spin);
     if (secondZ === null) {
       if (bestError === Infinity && reach < bestReach) {
         bestReach = reach;
@@ -271,8 +313,10 @@ function solveServeVy(pos: Vec3, vx: number, vz: number, spin: Vec3, targetZ: nu
       }
       continue;
     }
+    if (bestCarries && !carries) continue;
     const error = Math.abs(secondZ - targetZ);
-    if (error < bestError) {
+    if ((carries && !bestCarries) || error < bestError) {
+      bestCarries = carries;
       bestError = error;
       bestVy = vy;
     }
@@ -280,30 +324,47 @@ function solveServeVy(pos: Vec3, vx: number, vz: number, spin: Vec3, targetZ: nu
   return bestVy;
 }
 
-/** How a candidate serve turns out: where it lands on the receiver's half, and how far it got. */
+/**
+ * How a candidate serve turns out: where it lands on the receiver's half, how far it got, and whether
+ * it then carries on to where the receiver is actually standing. The last of those is not a nicety —
+ * the receiver holds their racket on a fixed plane and cannot come forward to dig out a serve that
+ * drops dead in the middle of the table, so a serve that stops short is a point won off someone who
+ * was never given a stroke to play.
+ */
 function serveOutcome(
   pos: Vec3,
   vx: number,
   vy: number,
   vz: number,
   spin: Vec3,
-): { secondZ: number | null; reach: number } {
+): { secondZ: number | null; reach: number; carries: boolean } {
   const ball: BallState = { pos: copyVec3(pos), vel: { x: vx, y: vy, z: vz }, spin: copyVec3(spin) };
   const events: PhysicsEvent[] = [];
   let ownBounce = false;
+  let secondZ: number | null = null;
   let reach = pos.z;
   for (let i = 0; i < SOLVER_MAX_STEPS; i++) {
     stepBall(ball, events);
     reach = Math.min(reach, ball.pos.z);
+    if (secondZ !== null && ball.pos.z <= -STAND_Z) return { secondZ, reach, carries: true };
     for (const event of events) {
-      if (event.type === 'net' || event.type === 'floor' || event.type === 'side') return { secondZ: null, reach };
+      if (event.type === 'net' || event.type === 'floor' || event.type === 'side') {
+        return { secondZ, reach, carries: false };
+      }
       if (event.type !== 'table') continue;
-      if (!ownBounce && event.side === 0) ownBounce = true;
-      else return { secondZ: event.side === 1 && ownBounce ? event.pos.z : null, reach };
+      if (!ownBounce && event.side === 0) {
+        ownBounce = true;
+      } else if (secondZ === null) {
+        if (event.side !== 1 || !ownBounce) return { secondZ: null, reach, carries: false };
+        secondZ = event.pos.z;
+      } else {
+        // Bounced twice on the receiver's half without ever reaching them: it died short.
+        return { secondZ, reach, carries: false };
+      }
     }
     events.length = 0;
   }
-  return { secondZ: null, reach };
+  return { secondZ, reach, carries: false };
 }
 
 /** Bisection on vertical launch speed: more vy carries the ball further towards -z. */

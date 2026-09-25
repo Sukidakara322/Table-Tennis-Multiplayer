@@ -129,9 +129,13 @@ export class BotController implements PaddleController {
     const { aggression, spinRead } = this.profile;
     const roll = this.rng();
     let styleY: number;
-    if (roll < 0.55) styleY = 1.2 + this.rng() * 2.2 * aggression; // topspin drive
-    else if (roll < 0.8) styleY = -(0.8 + this.rng() * 1.6); // push / chop
-    else styleY = (this.rng() - 0.5) * 0.8; // block
+    // No dead bats. Below HIT_TUNING.rallyMinSwing a stroke stops being aimed at all and the ball just
+    // rebounds off the rubber, which from here drops on its own side — a point given away for nothing,
+    // and not something a competent player does on purpose. Every plan is at least a real stroke.
+    const softest = HIT_TUNING.rallyMinSwing + 0.2;
+    if (roll < 0.55) styleY = softest + this.rng() * 2.2 * aggression; // topspin drive
+    else if (roll < 0.8) styleY = -(softest + this.rng() * 1.2); // push / chop
+    else styleY = softest; // a plain block, but still driven through the ball
     // Counter the incoming spin's kick and its own face angle at the meeting height by brushing against them.
     const faceLift = paddleFace(meetAt, { x: 0, y: 0 }).pitch * HIT_TUNING.faceLift;
     const counter = ((-spinKick(ball).y - faceLift) / HIT_TUNING.liftPerSwing) * spinRead;

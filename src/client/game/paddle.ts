@@ -1,4 +1,4 @@
-import { AIM_X_LIMIT, AIM_Y_MAX, AIM_Y_MIN, PADDLE_HOVER_Y, READY_STAND_Z } from '../../shared/constants';
+import { AIM_X_LIMIT, AIM_Y_MAX, AIM_Y_MIN, PADDLE_HOVER_Y, STAND_Z } from '../../shared/constants';
 import type { BallState } from '../../shared/physics';
 import type { MeetPoint } from '../../shared/predict';
 import { clamp, vec3, type Vec2, type Vec3 } from '../../shared/vec';
@@ -9,9 +9,8 @@ export type GamePhase = 'serve' | 'rally' | 'point' | 'over';
 /** A racket in its owner's local frame (own end of the table at +z). */
 export interface Paddle {
   /**
-   * Where the blade is. `x` and `y` are the player's — the mouse holds the racket anywhere on the
-   * plane in front of them — while `z` is the game's: you stand at the end line and only step in for a
-   * ball dying short (see `standFor`).
+   * Where the blade is. `x` and `y` are entirely the player's — the mouse holds the racket anywhere on
+   * the plane in front of them — and `z` is always STAND_Z, because the plane does not move.
    */
   pos: Vec3;
   prevPos: Vec3;
@@ -22,7 +21,7 @@ export interface Paddle {
 }
 
 export function createPaddle(): Paddle {
-  const ready = vec3(0, PADDLE_HOVER_Y, READY_STAND_Z);
+  const ready = vec3(0, PADDLE_HOVER_Y, STAND_Z);
   return {
     pos: { ...ready },
     prevPos: { ...ready },
@@ -46,7 +45,7 @@ export interface ControllerContext {
   isServer: boolean;
   /** Ball in the controller's local frame. */
   ball: BallState;
-  /** Where the ball will pass through this player's reach. */
+  /** Where the ball will cross this player's plane, or null if it never will (see `predictMeetPoint`). */
   meetPoint: MeetPoint | null;
   /** The incoming ball has bounced on this player's half, so it can be played without volleying. */
   incomingBounced: boolean;
@@ -58,7 +57,7 @@ export interface ControllerContext {
 }
 
 export interface PaddleController {
-  /** Holds the racket on its plane and strokes through the ball. Depth is the game's, for everyone. */
+  /** Moves the racket across its plane and strokes through the ball. Nothing else moves it. */
   update(paddle: Paddle, ctx: ControllerContext): void;
   resetForPoint(): void;
 }

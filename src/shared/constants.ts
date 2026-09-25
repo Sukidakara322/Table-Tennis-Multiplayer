@@ -35,10 +35,14 @@ export const GRAVITY = 9.81 / (BALL_SLOWDOWN * BALL_SLOWDOWN);
 /** Air drag: a = -DRAG_K * |v| * v */
 export const DRAG_K = 0.11;
 /**
- * Magnus effect: a = MAGNUS_K * (spin × v). Generous on purpose: with the slower ball it gives topspin a
- * clear dip, backspin a floating "parachute" and sidespin a bend you can see and play with.
+ * Magnus effect: a = MAGNUS_K * (spin × v). Still generous — the slower ball turns the same curve into
+ * a much longer arc, so topspin dips hard, backspin floats and sidespin bends visibly — but not so
+ * generous that a heavy cut simply beats gravity. That is the ceiling on this number, and it is a hard
+ * one: gravity here is a quarter of the real thing (see BALL_SLOWDOWN), so at MAX_SPIN and rally pace
+ * anything much above this lifts a backspin ball more than gravity pulls it down, and it flies off the
+ * end of the table without ever coming back. No stroke and no aim can save a ball that never lands.
  */
-export const MAGNUS_K = 0.0035;
+export const MAGNUS_K = 0.002;
 /** Per-step spin decay, roughly 10% per second. */
 export const SPIN_DAMPING = 0.99958;
 export const MAX_SPIN = 400;
@@ -58,14 +62,17 @@ export const PADDLE_VISUAL_RADIUS = 0.078;
 /** What you see is what you hit: the ball's centre must pass within the drawn blade plus the ball's radius. */
 export const PADDLE_HIT_RADIUS = PADDLE_VISUAL_RADIUS + BALL_RADIUS;
 /**
- * How far up the table a player can be. They stand at the end line and hold the racket in front of
- * them; the only thing that moves them is stepping in for a ball dying short of the line, which the
- * game does for them, since nobody can choose to stand in two places at once.
+ * The one depth a player is ever at. The racket is held on a plane here, just behind their own end
+ * line, and it never leaves it: the mouse moves the blade across the plane and nothing in the game
+ * moves it for them, not to chase a ball and not between shots. A racket that is only ever where the
+ * player put it is the whole point — it is what makes reaching a ball an act rather than a gift, and
+ * it keeps the blade still under the hand instead of sliding out from under a stroke mid-rally.
+ *
+ * Far enough back that any legal ball has bounced before it arrives, so nothing is volleyed by
+ * accident, and no further: a ball dying in front of this plane simply cannot be played, and every
+ * centimetre added here is another ball nobody could have reached.
  */
-export const REACH_NEAR_Z = HALF_LENGTH + 0.03;
-export const REACH_FAR_Z = HALF_LENGTH + 0.6;
-/** Furthest in over the table the racket can be pushed, for a short ball dying near the net. */
-export const REACH_IN_Z = REACH_NEAR_Z - 0.95;
+export const STAND_Z = HALF_LENGTH + 0.08;
 /**
  * The racket is held in front of you, at one fixed distance, and the mouse moves it freely across
  * that plane: sideways and up and down. Depth is not yours to steer — you stand where you stand and
@@ -106,23 +113,35 @@ export const HIT_COOLDOWN = 0.3;
 
 // Serve
 /**
- * The ball waits here until it is struck: in front of the server at blade height, following them
- * sideways so they choose where to serve from. Driving the racket forward through it serves with
- * topspin, dragging the racket back through it cuts under the ball for backspin.
+ * The ball waits just in front of the racket until it is struck, following it sideways so the server
+ * chooses where to serve from without the racket having to leave its plane. Flicking up through it
+ * serves with topspin, flicking down cuts under it for backspin.
  */
-export const SERVE_BALL_Z = HALF_LENGTH + 0.08;
-export const SERVE_BALL_HEIGHT = PADDLE_HOVER_Y + 0.06;
+export const SERVE_BALL_Z = STAND_Z - 0.14;
 /**
- * How fast the mouse must sweep to strike the waiting ball. The ball rides at the racket's own height
- * while it waits, so the racket can never run into it by standing somewhere: a serve is a deliberate
- * flick and nothing else. Set high enough — about a third of the racket's plane crossed in a tenth of
- * a second — that settling the racket where you want to serve from never strikes the ball by accident.
+ * And it waits low, at one fixed height, rather than riding up and down with the blade. A serve is
+ * struck out over the table with barely a metre of your own half in front of it, so the higher it
+ * starts the less room there is to put the first bounce anywhere legal: from here every swing can be
+ * served, and a hand's width higher most of them have nowhere to go. Serving is therefore something
+ * you come down to the ball to do, which is what a serve is.
+ */
+export const SERVE_BALL_HEIGHT = 0.12;
+/**
+ * Where the server's racket starts the point: high enough that the ball is plainly visible below the
+ * blade rather than hidden behind it. The view looks down the table at a shallow angle, so a ball only
+ * a little below the racket and a little beyond it sits inside the blade's own silhouette — and being
+ * told to bring the racket down to a ball you cannot see is no instruction at all.
+ */
+export const SERVE_READY_Y = 0.42;
+/**
+ * How fast the mouse must sweep to strike the waiting ball. A serve is a deliberate flick and nothing
+ * else: about a third of the racket's plane crossed in a tenth of a second, far past anything that
+ * settling the racket where you want to serve from could do by accident.
  */
 export const SERVE_MIN_FLICK = 1.8;
-/** Where the player stands: ready behind the end line, and just behind the ball when serving. */
-export const READY_STAND_Z = REACH_NEAR_Z + 0.1;
-export const SERVE_STAND_Z = SERVE_BALL_Z + 0.12;
-/** How fast a player steps in for a short ball. Quick, because there is never much time. */
-export const STEP_IN_SPEED = 4;
-/** How far from the waiting ball the racket can be and still strike it: it is held against the bat. */
-export const SERVE_REACH = 0.3;
+/**
+ * How near the waiting ball the racket has to be to strike it. Wide enough to reach from where the
+ * racket starts the point, and narrow enough that one held up at the top of its plane has to be
+ * brought down to the ball first — which is the one thing a serve asks of you.
+ */
+export const SERVE_REACH = 0.34;

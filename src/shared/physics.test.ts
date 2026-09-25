@@ -9,9 +9,7 @@ import {
   PADDLE_HIT_RADIUS,
   PADDLE_HOVER_Y,
   STROKE_SWEEP,
-  READY_STAND_Z,
-  REACH_FAR_Z,
-  REACH_IN_Z,
+  STAND_Z,
   SERVE_BALL_HEIGHT,
   SERVE_BALL_Z,
 } from './constants';
@@ -135,7 +133,7 @@ describe('contact sweep', () => {
 describe('racket posture', () => {
   it('turns the face towards the centre, and opens it where the racket is held low', () => {
     const still = { x: 0, y: 0 };
-    const held = (y: number) => ({ x: 0, y, z: READY_STAND_Z });
+    const held = (y: number) => ({ x: 0, y, z: STAND_Z });
     expect(paddleFace({ x: 0.8, y: PADDLE_HOVER_Y, z: 1.5 }, still).yaw).toBeLessThan(0);
     expect(paddleFace({ x: -0.8, y: PADDLE_HOVER_Y, z: 1.5 }, still).yaw).toBeGreaterThan(0);
     // Holding the racket low opens the face to lift the ball over; holding it high closes the face
@@ -239,9 +237,10 @@ describe('racket returns', () => {
     expect(first?.pos.z).toBeGreaterThan(-HALF_LENGTH);
   });
 
-  it('serves bounce on both halves across a range of swings', () => {
+  it('serves are legal and reach the receiver, across every swing', () => {
     const results: string[] = [];
-    let good = 0;
+    let legal = 0;
+    let reached = 0;
     const swings = [
       { x: 0, y: 1 },
       { x: 0, y: 2 },
@@ -251,25 +250,28 @@ describe('racket returns', () => {
       { x: 0, y: 5 },
       { x: -3, y: -3 },
     ];
-    // The ball waits at serve height and is struck by a paddle sweeping up or down through it.
-    const contacts: Array<[number, number]> = [
-      [SERVE_BALL_HEIGHT, 0],
-      [SERVE_BALL_HEIGHT - 0.08, 0],
-    ];
-    for (const [height, fallSpeed] of contacts) {
+    // The ball always waits at the same spot, so this is every serve there is: one per swing, from
+    // wherever across the table the server chose to stand. Every one must be legal, and every one must
+    // then carry to where the receiver's racket is — a serve is a set piece, and one that dies out of
+    // reach in the middle of the table wins the point off a player who was never given a shot.
+    for (const x of [0, -0.6, 0.6]) {
       for (const swing of swings) {
-        const contact = ball([0, height, SERVE_BALL_Z], [0, fallSpeed, 0]);
+        const contact = ball([x, SERVE_BALL_HEIGHT, SERVE_BALL_Z], [0, 0, 0]);
         const out = computeReturn({ contact, swing, offset: { x: 0, y: 0 }, face: racketFace(contact.pos, swing), isServe: true });
+        // Read the receiver's side of it first: `simulate` flies the ball it is given, in place.
+        const meet = predictMeetPoint(toLocalBall(1, out));
         const events = simulate(out, 3, (e) => tableBounces(e).length >= 2 || e.some((x) => x.type === 'floor' || x.type === 'net'));
-        const sides = tableBounces(events).map((e) => `${e.side}@${e.pos.z.toFixed(2)}`);
-        const net = events.some((e) => e.type === 'net');
-        results.push(`y=${height.toFixed(2)} swing ${swing.x},${swing.y} → ${sides.join(' ')}${net ? ' NET' : ''}`);
         const bounces = tableBounces(events);
-        if (bounces[0]?.side === 0 && bounces[1]?.side === 1) good++;
+        const ok = bounces[0]?.side === 0 && bounces[1]?.side === 1;
+        if (ok) legal++;
+        if (meet) reached++;
+        const sides = bounces.map((e) => `${e.side}@${e.pos.z.toFixed(2)}`).join(' ');
+        results.push(`x=${x} swing ${swing.x},${swing.y} → ${sides}${meet ? '' : ' OUT OF REACH'}`);
       }
     }
     console.log(results.join('\n'));
-    expect(good).toBeGreaterThanOrEqual(10);
+    expect(legal).toBe(swings.length * 3);
+    expect(reached).toBe(swings.length * 3);
   });
 
   it('predicts where the receiver meets the ball', () => {
@@ -277,10 +279,10 @@ describe('racket returns', () => {
     const out = computeReturn({ contact: incoming, swing, offset: { x: 0, y: 0 }, face: racketFace(incoming.pos, swing), isServe: false });
     const meet = predictMeetPoint(toLocalBall(1, out));
     expect(meet).not.toBeNull();
-    expect(meet!.pos.z).toBeGreaterThanOrEqual(REACH_IN_Z);
-    expect(meet!.pos.z).toBeLessThanOrEqual(REACH_FAR_Z);
-    // It must be a point a racket could actually reach: on the plane it is held on, or within a
-    // stroke's sweep of the nearest edge of it.
+    // The meeting point is on the plane the racket is held on — there is nowhere else it could be.
+    expect(meet!.pos.z).toBeGreaterThanOrEqual(STAND_Z);
+    expect(meet!.pos.z).toBeLessThan(STAND_Z + 0.05);
+    // And within a stroke's reach of that plane, or it would not be a meeting point at all.
     const reach = PADDLE_HIT_RADIUS + STROKE_SWEEP;
     expect(meet!.pos.y).toBeGreaterThan(AIM_Y_MIN - reach);
     expect(meet!.pos.y).toBeLessThan(AIM_Y_MAX + reach);
@@ -291,7 +293,16 @@ describe('racket returns', () => {
     while (!events.some((e) => e.type === 'table' && e.side === 0)) stepBall(local, events);
     const again = predictMeetPoint(local, true);
     expect(again).not.toBeNull();
-    expect(again!.pos.z).toBeCloseTo(meet!.pos.z, 1);
+    expect(again!.pos.y).toBeCloseTo(meet!.pos.y, 1);
+  });
+
+  it('refuses a ball nobody could have reached', () => {
+    // Dying in front of the plane: it bounces on the receiver's half and drops to the floor short.
+    const short = ball([0, 0.05, -0.9], [0, -0.2, 1.1]);
+    expect(predictMeetPoint(short)).toBeNull();
+    // And one that reaches the plane without ever bouncing is going out: playing it is a volley.
+    const long = ball([0, 0.35, -0.6], [0, 1.2, 9]);
+    expect(predictMeetPoint(long)).toBeNull();
   });
 
   it('logs spin interplay for tuning', () => {

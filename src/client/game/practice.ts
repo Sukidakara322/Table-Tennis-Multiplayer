@@ -9,13 +9,12 @@ import {
   AIM_Y_MIN,
   PADDLE_HOVER_Y,
   PADDLE_X_LIMIT,
-  READY_STAND_Z,
-  REACH_IN_Z,
-  STEP_IN_SPEED,
+  STAND_Z,
+  SERVE_BALL_HEIGHT,
   SERVE_BALL_Z,
   SERVE_MIN_FLICK,
+  SERVE_READY_Y,
   SERVE_REACH,
-  SERVE_STAND_Z,
 } from '../../shared/constants';
 import { toLocalBall, toLocalVec, toWorldBall, toWorldVec } from '../../shared/frames';
 import { bladeContact } from '../../shared/contact';
@@ -26,7 +25,7 @@ import { predictMeetPoint, type MeetPoint } from '../../shared/predict';
 import { paddleFace } from '../../shared/racket';
 import { applyRallyEvent, createRally, type RallyEvent, type RallyOutcome, type RallyState } from '../../shared/referee';
 import { otherPlayer, PLAYERS, type PlayerIndex } from '../../shared/types';
-import { approach, clamp, copyVec3, lerp, length3, vec3, type Vec2, type Vec3 } from '../../shared/vec';
+import { clamp, copyVec3, lerp, length3, vec3, type Vec2, type Vec3 } from '../../shared/vec';
 import { loadSettings, saveSettings } from '../settings';
 import { GameUi, REASON_TEXT } from '../ui/gameUi';
 import { BotController, type BotDifficulty } from './bot';
@@ -81,6 +80,9 @@ export class PracticeSession {
   private lastStrokeTime: [number, number] = [-Infinity, -Infinity];
   /** Each player's body centre x (local frame); the grip points back towards it. */
   private bodyX: [number, number] = [0, 0];
+  /** Where the view is leaning, -1..1 across the table, and whether it is frozen. See `trackLean`. */
+  private viewLean = 0;
+  private viewHeld = false;
   /** Sim time the meeting points were worked out at, so their countdown stays honest. */
   private meetPredictedAt = 0;
   private phaseTimer = 0;
@@ -188,7 +190,7 @@ export class PracticeSession {
     this.prevBallPos = copyVec3(this.ball.pos);
     this.renderer.clearTrail();
     this.ui.setScore(this.match, server);
-    this.ui.setHint(server === HUMAN ? 'Sweep the mouse through the ball to serve: up for topspin, down for backspin, sideways to place it' : null);
+    this.ui.setHint(server === HUMAN ? 'To serve, bring the racket down to the ball and flick: up for topspin, down for backspin' : null);
 
     for (const player of PLAYERS) {
       if (isMatchPoint(this.match, player)) {
@@ -199,23 +201,23 @@ export class PracticeSession {
   }
 
   /**
-   * Sets both rackets back to their ready place for a new point — behind the waiting ball, in the
-   * middle of the table — rather than leaving them wherever the rally ended. This runs when the next
-   * point starts, a beat after the last one was decided, so the players see the point out first.
-   * The mouse is moved with the racket, or the next flick would read as a stroke back to wherever
-   * the cursor had been left.
+   * Sets both rackets back to the middle of their plane for a new point, rather than leaving them
+   * wherever the rally ended. This runs when the next point starts, a beat after the last one was
+   * decided, so the players see the point out first. The mouse is moved with the racket, or the next
+   * flick would read as a stroke back to wherever the cursor had been left.
    */
   private resetPaddles(): void {
     const server = currentServer(this.match);
-    const ready = { x: 0, y: PADDLE_HOVER_Y };
+    // The server starts a little higher, so the ball waiting below the blade can be seen at all.
+    const readyFor = (player: PlayerIndex) => ({ x: 0, y: player === server ? SERVE_READY_Y : PADDLE_HOVER_Y });
     for (const player of PLAYERS) {
-      const z = player === server ? SERVE_STAND_Z : READY_STAND_Z;
-      placePaddle(this.paddles[player], { x: ready.x, y: ready.y, z });
+      const ready = readyFor(player);
+      placePaddle(this.paddles[player], { x: ready.x, y: ready.y, z: STAND_Z });
     }
     this.bodyX = [0, 0];
     // The mouse is put back where the racket now is, or the jump from wherever the cursor was left
     // would read as a stroke — and, on a serve, strike the waiting ball on the spot.
-    const cursor = cursorForAim(ready);
+    const cursor = cursorForAim(readyFor(HUMAN));
     this.input.recentre(cursor.x, cursor.y);
   }
 
@@ -272,7 +274,8 @@ export class PracticeSession {
     for (const player of PLAYERS) {
       const paddle = this.paddles[player];
       const ball = toLocalBall(player, this.ball);
-      // Controllers hold the racket on its plane and stroke through the ball; depth is ours (`standFor`).
+      // Where the racket goes is entirely the controller's — the mouse, for a person. The game only
+      // holds it to its plane; it never nudges it towards a ball, not even one it cannot reach.
       this.controllers[player].update(paddle, {
         phase: this.phase,
         isServer: this.rally.server === player,
@@ -283,47 +286,50 @@ export class PracticeSession {
         wallTime,
         dt: DT,
       });
-      // Depth is the game's: you stand where you stand, and step in only for a ball that would die
-      // short. Everything else about where the racket is came from the controller above.
-      paddle.pos.z = approach(paddle.pos.z, this.standFor(player), STEP_IN_SPEED * DT);
+      // The plane is fixed, so depth is not something anyone sets — it simply is.
+      paddle.pos.z = STAND_Z;
       paddle.pos.x = clamp(paddle.pos.x, -PADDLE_X_LIMIT, PADDLE_X_LIMIT);
       paddle.pos.y = clamp(paddle.pos.y, AIM_Y_MIN, AIM_Y_MAX);
       // The body shuffles after the racket, so the stance lags a quick move across the table.
       this.bodyX[player] += (paddle.pos.x - this.bodyX[player]) * (DT / BODY_FOLLOW_TIME);
     }
+    this.trackLean();
   }
 
   /**
-   * How far up the table a player is standing. Normally they stand still, at one fixed distance, with
-   * the racket held in front of them — where the racket is on that plane is the player's business.
-   * The one exception is a ball that would die before reaching them: rather than making it a free
-   * point, they step in to meet it, and the view steps in with them. That step is the only thing that
-   * moves a player, which is what keeps the view calm.
+   * Where the view leans: towards the ball, but only while the ball is on the far half. The instant it
+   * crosses the net onto yours the view freezes, and it stays frozen until the ball is back over.
+   *
+   * That freeze is the whole point of this. The racket stands at a fixed place in the world, so any
+   * movement of the camera slides the blade across the screen while your hand has not moved — and
+   * everything from the moment the ball crosses to the moment it leaves again is you aiming, striking
+   * and following through. The crossing is the right line to draw, not the bounce: by the bounce you
+   * have been tracking the ball down for half a second already.
+   *
+   * The far half is the whole of the rest of the rally, which is plenty of time for the view to travel
+   * — and stopping the target is not enough on its own, since the eye would go on easing towards it.
+   * The eye itself is pinned; see `trackLean` on the renderer.
    */
-  private standFor(player: PlayerIndex): number {
-    if (this.phase === 'serve' && this.rally.server === player) return SERVE_STAND_Z;
-    // Never before the bounce. Standing in over the table while the ball is still on its way down
-    // puts the racket in front of where it has to land, and catching it there is a volley — the point
-    // given away by the very step meant to save it.
-    const bounced = this.phase === 'rally' && this.rally.stage === 'awaitingReturn' && this.rally.lastHitter !== player;
-    const meet = bounced ? this.meetPoints[player] : null;
-    const shortBall = meet && meet.pos.z < READY_STAND_Z ? meet.pos.z : READY_STAND_Z;
-    return clamp(shortBall, REACH_IN_Z, READY_STAND_Z);
+  private trackLean(): void {
+    const ballLocal = toLocalVec(HUMAN, this.ball.pos);
+    this.viewHeld = this.phase === 'rally' && ballLocal.z > 0;
+    if (this.viewHeld) return;
+    this.viewLean = clamp(ballLocal.x / HALF_WIDTH, -1, 1);
   }
 
   // ─── Ball ────────────────────────────────────────────────────────────────
 
   /**
-   * The ball waits in front of the server at blade height, following them sideways: moving left and
-   * right chooses where the serve starts from, and driving the racket through it along the table serves.
+   * The ball waits low in front of the server, following them sideways: moving left and right chooses
+   * where the serve starts from, and flicking the racket through it serves. Its height is fixed rather
+   * than riding with the blade, because a serve struck from up near the top of the racket's plane has
+   * nowhere legal to bounce (see SERVE_BALL_HEIGHT) — so you come down to it instead.
    */
   private holdBallForServe(): void {
     const server = this.rally.server;
     const paddle = this.paddles[server];
-    // Held in front of the racket, so it rides at whatever height the blade is at. Otherwise a stroke
-    // that lifts the racket — which every forward drive does — would simply pass under the ball.
     const local: BallState = {
-      pos: { x: clamp(paddle.pos.x, -HALF_WIDTH, HALF_WIDTH), y: paddle.pos.y, z: SERVE_BALL_Z },
+      pos: { x: clamp(paddle.pos.x, -HALF_WIDTH, HALF_WIDTH), y: SERVE_BALL_HEIGHT, z: SERVE_BALL_Z },
       vel: vec3(),
       spin: vec3(),
     };
@@ -416,13 +422,14 @@ export class PracticeSession {
     const server = this.rally.server;
     const paddle = this.paddles[server];
     const swingSpeed = Math.hypot(paddle.swing.x, paddle.swing.y);
-    // The ball is in your own hand here, held against the racket, so the stroke is what strikes it
-    // rather than the racket having to catch it up: drive forward to brush topspin onto it, drag back
-    // to cut under it for backspin. Requiring the racket to run the ball down would make a backspin
-    // serve impossible, since dragging backwards only carries the racket away from a waiting ball.
+    // The ball is in your own hand here, held against the racket, so the flick is what strikes it
+    // rather than the racket having to catch it up: flick up to brush topspin onto it, down to cut
+    // under it for backspin. Requiring the racket to run the ball down would make a backspin serve
+    // impossible, since flicking downwards only carries the racket away from a waiting ball. What it
+    // does require is being there: bring the racket to the ball, then flick.
     const ball = toLocalBall(server, this.ball);
-    const nearBall = Math.abs(paddle.pos.z - ball.pos.z) < SERVE_REACH;
-    if (!nearBall || Math.abs(paddle.swing.y) < SERVE_MIN_FLICK) return;
+    const reach = Math.hypot(paddle.pos.x - ball.pos.x, paddle.pos.y - ball.pos.y, paddle.pos.z - ball.pos.z);
+    if (reach > SERVE_REACH || Math.abs(paddle.swing.y) < SERVE_MIN_FLICK) return;
 
     const face = paddleFace(paddle.pos, paddle.swing);
     const contact: BallState = { pos: copyVec3(ball.pos), vel: ball.vel, spin: ball.spin };
@@ -529,14 +536,11 @@ export class PracticeSession {
       };
     };
 
-    // The view leans towards the side the ball is on while it is on your half, and comes forward with
-    // you when you step in. It never follows the racket: that would drag the table under the mouse.
-    const ballLocal = toLocalVec(HUMAN, this.ball.pos);
-    const onMyHalf = clamp((ballLocal.z + 0.4) / (HALF_LENGTH + 0.4), 0, 1);
     return {
       ball: { pos, vel: this.ball.vel, spin: this.ball.spin },
       paddles: [paddleFrame(0), paddleFrame(1)],
-      viewerStand: { x: ballLocal.x * onMyHalf, z: this.paddles[HUMAN].pos.z },
+      viewLean: this.viewLean,
+      viewHeld: this.viewHeld,
     };
   }
 }

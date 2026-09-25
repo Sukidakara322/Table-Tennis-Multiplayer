@@ -14,9 +14,7 @@ import {
   AIM_X_LIMIT,
   AIM_Y_MAX,
   AIM_Y_MIN,
-  READY_STAND_Z,
-  REACH_FAR_Z,
-  REACH_IN_Z,
+  STAND_Z,
   VIEW_EYE_Y,
   VIEW_EYE_Z,
   TABLE_HEIGHT,
@@ -65,18 +63,16 @@ const GRIP_LENGTH = PADDLE_VISUAL_RADIUS + 0.08;
 const CAMERA_LOOK_AT = { x: 0, y: -0.72, z: -0.9 };
 /**
  * Everything that must stay on screen, in the viewer's local frame, with the screen margin to keep
- * around it: the four table corners, every corner of the plane the racket is held on at its nearest
- * depth (where it looks biggest), and headroom for a looping or lobbed ball.
+ * around it: the four table corners, every corner of the plane the racket is held on, and headroom
+ * for a looping or lobbed ball.
  */
 const FRAMED_POINTS: Array<[Vec3, number]> = [
   ...[-HALF_WIDTH, HALF_WIDTH].flatMap((x) =>
     [-HALF_LENGTH, HALF_LENGTH].map((z) => [{ x, y: 0, z }, 0.03] as [Vec3, number]),
   ),
   ...[-(AIM_X_LIMIT + PADDLE_VISUAL_RADIUS), AIM_X_LIMIT + PADDLE_VISUAL_RADIUS].flatMap((x) =>
-    [AIM_Y_MIN - PADDLE_VISUAL_RADIUS, AIM_Y_MAX + PADDLE_VISUAL_RADIUS].flatMap((y) =>
-      // Only as far back as a player ever stands. Framing the whole reach corridor would fit a racket
-      // a metre from the eye into the shot, and the lens would pull back until the table was a stamp.
-      [REACH_IN_Z, READY_STAND_Z].map((z) => [{ x, y, z }, 0.012] as [Vec3, number]),
+    [AIM_Y_MIN - PADDLE_VISUAL_RADIUS, AIM_Y_MAX + PADDLE_VISUAL_RADIUS].map(
+      (y) => [{ x, y, z: STAND_Z }, 0.012] as [Vec3, number],
     ),
   ),
   [{ x: 0, y: 0.9, z: 0 }, 0.02],
@@ -86,20 +82,24 @@ const FRAMED_POINTS: Array<[Vec3, number]> = [
 const BASE_BLOOM = 0.4;
 
 /**
- * The view answers the play quickly but barely moves: a short lean towards the side the ball is on,
- * and forward with you when you step in for a short one. Small and fast is the point — a camera that
- * swings about is far worse to play under than one that holds still, and anything that tracks the
- * racket itself just drags the whole table around under the mouse.
+ * The view leans towards the side the ball is on, by this much at the very edge of the table. It is
+ * the only camera movement there is: the eye never changes depth, because the player never does.
+ *
+ * Kept small on purpose, and — far more importantly — held completely still from the bounce onwards
+ * (see `trackLean` on the session). The racket stands at a fixed place in the world, so every
+ * centimetre the camera moves slides the blade across the screen without the hand having moved. That
+ * is fine while the ball is away and intolerable while you are playing a stroke.
  */
-const CAMERA_TRACK_X = 0.22;
+const CAMERA_LEAN_X = 0.13;
 /**
- * A fraction of the step, not the whole step. Stepping in for a short ball moves you up to a metre;
- * carrying the eye all of that turns a quick step into the table lunging at you. Following a third of
- * it reads as leaning in — you see that the play has come forward — while the table stays put.
+ * The look-at point swings further than the eye, so the view mostly turns rather than slides. This is
+ * the difference between looking across at the play and side-stepping to it. Sliding the eye moves
+ * near things across the screen much faster than far ones, and the racket is the nearest thing there
+ * is, so a shifting eye drags it about; turning moves the whole view together, which reads as looking.
  */
-const CAMERA_TRACK_Z = 0.3;
-const CAMERA_AIM_SHARE = 0.5;
-const CAMERA_FOLLOW_TIME = 0.16;
+const CAMERA_AIM_SHARE = 2.2;
+/** Quick enough to have arrived before the ball does, since it stops moving when the ball bounces. */
+const CAMERA_FOLLOW_TIME = 0.11;
 
 export interface PaddleFrame {
   /** World position. */
@@ -115,8 +115,10 @@ export interface PaddleFrame {
 export interface RenderFrame {
   ball: { pos: Vec3; vel: Vec3; spin: Vec3 } | null;
   paddles: [PaddleFrame, PaddleFrame];
-  /** Where the viewing player is standing, in their own local frame: the camera travels with them. */
-  viewerStand: { x: number; z: number };
+  /** How far across the table the view should lean, -1..1. */
+  viewLean: number;
+  /** The stroke is the viewer's to play: the eye must not move a millimetre until it is over. */
+  viewHeld: boolean;
 }
 
 function hdr(color: THREE.Color, intensity: number): THREE.Color {
@@ -232,10 +234,7 @@ export class GameRenderer {
     this.netFlash = Math.max(0, this.netFlash - dt * 3);
     this.netCord.material.color.copy(hdr(LINE_WHITE, 1 + this.netFlash * 1.5));
 
-    // The view travels with the player. Since the game carries them to the ball, this is what the
-    // player actually experiences as moving: the table swings across and comes towards them as they
-    // are taken wide or in to the net, instead of a racket sliding about on a table that never moves.
-    this.trackStand(frame.viewerStand, dt);
+    this.trackLean(frame.viewLean, frame.viewHeld, dt);
     this.shake = Math.max(0, this.shake - dt * 2.5);
     const s = this.shake * this.shake * 0.02;
     this.camera.position.copy(this.eye).add(new THREE.Vector3((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, 0));
@@ -244,15 +243,17 @@ export class GameRenderer {
   }
 
   /**
-   * Eases the eye to sit behind wherever the player is standing. Only a share of their movement is
-   * followed: enough that being played wide or drawn in to the net is felt, without the whole table
-   * lurching on every step.
+   * Eases the eye sideways towards where the play is. Depth and height never change: the player
+   * stands in one place all match, so there is nothing else for the camera to follow. Whether it is
+   * safe to be moving at all is decided by the session, which stops feeding it a new lean once the
+   * stroke is the player's to make; this only has to get there quickly and smoothly.
    */
-  private trackStand(stand: { x: number; z: number }, dt: number): void {
-    const wantX = clamp(stand.x / HALF_WIDTH, -1, 1) * CAMERA_TRACK_X;
-    const wantZ = VIEW_EYE_Z + (clamp(stand.z, REACH_IN_Z, REACH_FAR_Z) - READY_STAND_Z) * CAMERA_TRACK_Z;
-    const local = { x: wantX, y: VIEW_EYE_Y, z: wantZ };
-    const home = toWorldVec(this.viewPlayer, local);
+  private trackLean(lean: number, held: boolean, dt: number): void {
+    // Dead stop, not a slower ease. Easing towards a frozen target still creeps for a few tenths of a
+    // second, and those are the tenths in which the stroke is played.
+    if (held) return;
+    const wantX = clamp(lean, -1, 1) * CAMERA_LEAN_X;
+    const home = toWorldVec(this.viewPlayer, { x: wantX, y: VIEW_EYE_Y, z: VIEW_EYE_Z });
     const look = toWorldVec(this.viewPlayer, {
       x: wantX * CAMERA_AIM_SHARE,
       y: CAMERA_LOOK_AT.y,
@@ -294,7 +295,7 @@ export class GameRenderer {
     const up = right.clone().cross(forward);
     const offset = new THREE.Vector3();
     let tan = 0;
-    for (const panX of [-CAMERA_TRACK_X * AIM_X_LIMIT, 0, CAMERA_TRACK_X * AIM_X_LIMIT]) {
+    for (const panX of [-CAMERA_LEAN_X, 0, CAMERA_LEAN_X]) {
       for (const [point, margin] of FRAMED_POINTS) {
         offset.set(point.x - panX, point.y - eye.y, point.z - eye.z);
         const depth = offset.dot(forward);
